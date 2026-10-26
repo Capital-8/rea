@@ -13,6 +13,7 @@ import type {
   Browser,
   BrowserContext,
   CDPSession,
+  ConnectOverCDPOptions,
   Page,
   chromium,
 } from "playwright-core";
@@ -25,10 +26,6 @@ import {
   withPlaywrightExecutionBoundary,
   PLAYWRIGHT_CLEANUP_CONFIRMATION_TIMEOUT_MS,
 } from "./PlaywrightExecutionBoundary.js";
-import {
-  closeCdpEndpointPageTarget,
-  openCdpEndpointPageTarget,
-} from "./CdpEndpointPageTarget.js";
 import {
   releaseLateScenarioCommand,
   scenarioCommandPending,
@@ -439,6 +436,7 @@ const findConnectedPage = async (
 
 /** Owns the target state changed while one scenario uses an attached page. */
 class AttachedScenarioEnvironmentOwner {
+  #focusOverride = false;
   #mediaOverride = false;
   #deviceMetricsOverride = false;
   #localeOverride = false;
@@ -479,6 +477,7 @@ class AttachedScenarioEnvironmentOwner {
 
   get restored(): boolean {
     return (
+      !this.#focusOverride &&
       !this.#mediaOverride &&
       !this.#deviceMetricsOverride &&
       !this.#localeOverride &&
@@ -567,6 +566,18 @@ class AttachedScenarioEnvironmentOwner {
       "Emulation.setTimezoneOverride",
     );
     throwIfScenarioCancelled(signal);
+
+    // Keep scenario actions usable in the selected background page without
+    // Playwright's connection-wide focus override on unrelated pages.
+    await this.#command(
+      this.session
+        .send("Emulation.setFocusEmulationEnabled", { enabled: true })
+        .then(() => {
+          this.#focusOverride = true;
+        }),
+      "Emulation.setFocusEmulationEnabled",
+    );
+    throwIfScenarioCancelled(signal);
   }
 
   async close(): Promise<void> {
@@ -581,6 +592,16 @@ class AttachedScenarioEnvironmentOwner {
       await settleScenarioCommand(cause);
     }
     const failures: unknown[] = [];
+    if (this.#focusOverride) {
+      try {
+        await this.session.send("Emulation.setFocusEmulationEnabled", {
+          enabled: false,
+        });
+        this.#focusOverride = false;
+      } catch (cause: unknown) {
+        failures.push(cause);
+      }
+    }
     if (this.#timezoneOverride) {
       try {
         await this.session.send("Emulation.setTimezoneOverride", {
@@ -673,7 +694,7 @@ type ScenarioBrowserLauncher = Pick<
 > & {
   readonly connectOverCDP: (
     endpoint: string,
-    options?: { readonly timeout?: number },
+    options?: Pick<ConnectOverCDPOptions, "timeout" | "noDefaults">,
   ) => Promise<Pick<Browser, "contexts" | "close" | "isConnected" | "version">>;
 };
 
@@ -682,25 +703,6 @@ type AttachedBrowserRequest = Extract<
   { readonly mode: "connect" }
 >;
 
-/**
- * Chromium restricts browser-context management over a plain
- * `--remote-debugging-port` endpoint, so Playwright's CDP handshake cannot
- * send its `Browser.setDownloadBehavior` initialization against an endpoint
- * whose browser exposes no page targets. The endpoint still serves target
- * discovery over HTTP, and the failure names both the command and the
- * Chrome-side refusal, so the recovery can be recognized exactly.
- */
-const isContextManagementHandshakeRejection = (cause: unknown): boolean =>
-  cause instanceof Error &&
-  cause.message.includes("Browser.setDownloadBehavior") &&
-  cause.message.includes("Browser context management is not supported");
-
-/** Attach-time HTTP page-target commands, replaceable in tests. */
-export interface AttachedPageTargetCommands {
-  readonly openPageTarget: typeof openCdpEndpointPageTarget;
-  readonly closePageTarget: typeof closeCdpEndpointPageTarget;
-}
-
 const openAttachedScenarioBrowser = async (
   browserRequest: AttachedBrowserRequest,
   environment: BrowserScenario["environment"],
@@ -708,68 +710,30 @@ const openAttachedScenarioBrowser = async (
   signal: AbortSignal | undefined,
   retainCleanup: ((lease: AnalysisCleanupLease) => void) | undefined,
   commandTimeoutMs: number,
-  pageTargetCommands: AttachedPageTargetCommands = {
-    openPageTarget: openCdpEndpointPageTarget,
-    closePageTarget: closeCdpEndpointPageTarget,
-  },
 ): Promise<OpenedScenarioBrowser> => {
   const lease = await acquireAttachedScenario(browserRequest, signal);
   let cleanupOwner: PlaywrightScenarioBrowserCleanupOwner | undefined;
   let environmentOwner: AttachedScenarioEnvironmentOwner | undefined;
-  let bootstrapTargetId: string | undefined;
-  const connect = () =>
-    withScenarioCommandDeadline(
-      () =>
-        launcher.connectOverCDP(browserRequest.cdp_endpoint, {
-          timeout: commandTimeoutMs,
-        }),
-      commandTimeoutMs,
-      "handshake",
-    );
-  let browser: Awaited<ReturnType<typeof connect>>;
   try {
     const priorOwner = lease.admission.cleanupOwner;
     if (priorOwner !== undefined) await priorOwner.close();
     throwIfScenarioCancelled(signal);
 
-    try {
-      browser = await connect();
-    } catch (cause: unknown) {
-      if (!isContextManagementHandshakeRejection(cause)) throw cause;
-      // The endpoint exposes no page target Playwright can initialize
-      // against. Open one through the same discovery plane and retry once;
-      // the original handshake refusal stays authoritative if recovery
-      // cannot proceed.
-      try {
-        bootstrapTargetId = await pageTargetCommands.openPageTarget(
-          browserRequest.cdp_endpoint,
-          OPERATION,
-          signal,
-        );
-      } catch {
-        throw cause;
-      }
-      browser = await connect();
-    }
+    const browser = await withScenarioCommandDeadline(
+      () =>
+        launcher.connectOverCDP(browserRequest.cdp_endpoint, {
+          timeout: commandTimeoutMs,
+          // Only the selected target's environment owner may apply overrides.
+          // Playwright defaults also mutate unrelated external pages and can
+          // require context management on an otherwise usable CDP endpoint.
+          noDefaults: true,
+        }),
+      commandTimeoutMs,
+      "handshake",
+    );
     const cleanup: PlaywrightScenarioBrowserCleanupOwner =
       new PlaywrightScenarioBrowserCleanupOwner({
         closeBrowser: async (disconnectAtBoundary) => {
-          // A page target opened only to unlock the handshake does not belong
-          // to the caller's browser; release it before disconnecting.
-          const openedBootstrapTarget = bootstrapTargetId;
-          if (openedBootstrapTarget !== undefined) {
-            bootstrapTargetId = undefined;
-            try {
-              await pageTargetCommands.closePageTarget(
-                browserRequest.cdp_endpoint,
-                openedBootstrapTarget,
-                OPERATION,
-                signal,
-              );
-            } catch {
-              // The bootstrap target is best-effort: never block cleanup.
-            }
-          }
           let environmentFailure: unknown;
           const ownedEnvironment = environmentOwner;
           if (ownedEnvironment !== undefined) {
@@ -854,21 +818,6 @@ const openAttachedScenarioBrowser = async (
     };
   } catch (cause: unknown) {
     if (cleanupOwner === undefined) {
-      // No cleanup owner exists before the transport opens, so a page target
-      // opened for a handshake that still failed is released directly here.
-      const abandonedBootstrapTarget = bootstrapTargetId;
-      if (abandonedBootstrapTarget !== undefined) {
-        try {
-          await pageTargetCommands.closePageTarget(
-            browserRequest.cdp_endpoint,
-            abandonedBootstrapTarget,
-            OPERATION,
-            signal,
-          );
-        } catch {
-          // Best-effort: the primary handshake failure stays authoritative.
-        }
-      }
       const owned = ownLateScenarioCommand(
         cause,
         retainCleanup,
@@ -900,7 +849,6 @@ export const openPlaywrightScenarioBrowser = async (
     readonly launcher?: ScenarioBrowserLauncher;
     readonly signal?: AbortSignal | undefined;
     readonly retainCleanup?: (lease: AnalysisCleanupLease) => void;
-    readonly pageTargetCommands?: AttachedPageTargetCommands;
   } = {},
 ): Promise<OpenedScenarioBrowser> => {
   // Load Playwright only when a scenario opens; MCP startup stays off its module graph.
@@ -915,7 +863,6 @@ export const openPlaywrightScenarioBrowser = async (
       options.signal,
       options.retainCleanup,
       commandTimeoutMs,
-      options.pageTargetCommands,
     );
 
   const profilePath = await mkdtemp(join(tmpdir(), "rea-browser-scenario-"));

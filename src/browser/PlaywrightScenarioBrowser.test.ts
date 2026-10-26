@@ -22,10 +22,6 @@ import {
   openPlaywrightScenarioBrowser,
   PlaywrightScenarioBrowserCleanupOwner,
 } from "./PlaywrightScenarioBrowser.js";
-import {
-  closeCdpEndpointPageTarget,
-  openCdpEndpointPageTarget,
-} from "./CdpEndpointPageTarget.js";
 
 const hostPlatform = process.platform;
 
@@ -392,6 +388,11 @@ it("restores its environment overrides before releasing an attached browser", as
   const fixture = attachedBrowserFixture({
     send: async (method, parameters) => {
       if (
+        method === "Emulation.setFocusEmulationEnabled" &&
+        (parameters as { enabled?: boolean }).enabled === false
+      )
+        cleanupOrder.push("focus");
+      if (
         method === "Emulation.setTimezoneOverride" &&
         (parameters as { timezoneId?: string }).timezoneId === ""
       )
@@ -439,6 +440,7 @@ it("restores its environment overrides before releasing an attached browser", as
   expect(fixture.environmentSession.detach).toHaveBeenCalledOnce();
   expect(fixture.browser.close).toHaveBeenCalledOnce();
   expect(cleanupOrder).toEqual([
+    "focus",
     "timezone",
     "locale",
     "device-metrics",
@@ -492,33 +494,40 @@ it("checks a late stop after attached restoration and before transport disconnec
   ]);
 });
 
-it("retains attached environment ownership until a failed reset can be retried", async () => {
-  let localeResetAttempts = 0;
-  const fixture = attachedBrowserFixture({
-    send: async (method, parameters) => {
-      if (
-        method === "Emulation.setLocaleOverride" &&
-        (parameters as { locale?: string }).locale === ""
-      ) {
-        localeResetAttempts += 1;
-        if (localeResetAttempts === 1) throw new Error("reset interrupted");
-      }
-    },
-  });
-  const opened = await fixture.open();
+it.each(["locale", "focus"] as const)(
+  "retains a failed %s reset for cleanup retry",
+  async (mutation) => {
+    let resetAttempts = 0;
+    const fixture = attachedBrowserFixture({
+      send: async (method, parameters) => {
+        if (
+          (mutation === "locale" &&
+            method === "Emulation.setLocaleOverride" &&
+            (parameters as { locale?: string }).locale === "") ||
+          (mutation === "focus" &&
+            method === "Emulation.setFocusEmulationEnabled" &&
+            (parameters as { enabled?: boolean }).enabled === false)
+        ) {
+          resetAttempts += 1;
+          if (resetAttempts === 1) throw new Error("reset interrupted");
+        }
+      },
+    });
+    const opened = await fixture.open();
 
-  await expect(opened.cleanup.close()).rejects.toMatchObject({
-    reason: "cleanup_failed",
-    cleanup: { reason: "reset interrupted" },
-  });
-  expect(fixture.browser.close).not.toHaveBeenCalled();
-  expect(fixture.environmentSession.detach).not.toHaveBeenCalled();
+    await expect(opened.cleanup.close()).rejects.toMatchObject({
+      reason: "cleanup_failed",
+      cleanup: { reason: "reset interrupted" },
+    });
+    expect(fixture.browser.close).not.toHaveBeenCalled();
+    expect(fixture.environmentSession.detach).not.toHaveBeenCalled();
 
-  await opened.cleanup.close();
-  expect(localeResetAttempts).toBe(2);
-  expect(fixture.environmentSession.detach).toHaveBeenCalledOnce();
-  expect(fixture.browser.close).toHaveBeenCalledOnce();
-});
+    await opened.cleanup.close();
+    expect(resetAttempts).toBe(2);
+    expect(fixture.environmentSession.detach).toHaveBeenCalledOnce();
+    expect(fixture.browser.close).toHaveBeenCalledOnce();
+  },
+);
 
 it("does not clear an attached environment override it failed to acquire", async () => {
   const fixture = attachedBrowserFixture({
@@ -1264,75 +1273,96 @@ it("closes a browser that connects after its deadline without waiting to report 
   expect(closed).toBe(true);
 });
 
-it("restores an environment mutation that completes after its deadline", async () => {
-  let restored = false;
-  const scenario = browserScenarioSchema.parse({
-    browser: {
-      mode: "connect",
-      cdp_endpoint: "http://127.0.0.1:9222",
-      target_id: "late-environment-target",
-    },
-    start_url: { url: "https://example.test" },
-    environment: { service_workers: "allow" },
-    command_timeout_ms: 40,
-    actions: scenarioActions,
-  });
-  const discoverySession = {
-    send: vi.fn(async () => ({
-      targetInfo: { targetId: "late-environment-target" },
-    })),
-    detach: vi.fn(async () => undefined),
-  } as unknown as CDPSession;
-  const environmentSession = {
-    send: vi.fn(async () => undefined),
-    detach: vi.fn(async () => undefined),
-  } as unknown as CDPSession;
-  const page = {
-    emulateMedia: vi.fn(async (options: { colorScheme?: string | null }) => {
-      if (options.colorScheme === null) {
-        restored = true;
-        return;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 80));
-    }),
-    isClosed: vi.fn(() => false),
-  } as unknown as Page;
-  const context = {
-    pages: () => [page],
-    newCDPSession: vi
-      .fn()
-      .mockResolvedValueOnce(discoverySession)
-      .mockResolvedValueOnce(environmentSession),
-  } as unknown as BrowserContext;
-  const browser = {
-    close: vi.fn(async () => undefined),
-    contexts: () => [context],
-    isConnected: vi.fn(() => true),
-    version: () => "late-environment",
-  };
-  await expect(
-    openPlaywrightScenarioBrowser(
-      scenario,
-      {},
-      {
-        launcher: {
-          connectOverCDP: async () => browser,
-          launchPersistentContext: async () => {
-            throw new Error("Unexpected launch");
+it.each(["media", "focus"] as const)(
+  "restores a late %s mutation after its deadline",
+  async (mutation) => {
+    let restored = false;
+    const scenario = browserScenarioSchema.parse({
+      browser: {
+        mode: "connect",
+        cdp_endpoint: "http://127.0.0.1:9222",
+        target_id: "late-environment-target",
+      },
+      start_url: { url: "https://example.test" },
+      environment: { service_workers: "allow" },
+      command_timeout_ms: 40,
+      actions: scenarioActions,
+    });
+    const discoverySession = {
+      send: vi.fn(async () => ({
+        targetInfo: { targetId: "late-environment-target" },
+      })),
+      detach: vi.fn(async () => undefined),
+    } as unknown as CDPSession;
+    const environmentSession = {
+      send: vi.fn(
+        async (method: string, parameters?: { enabled?: boolean }) => {
+          if (method !== "Emulation.setFocusEmulationEnabled") return;
+          if (parameters?.enabled === false) {
+            if (mutation === "focus") restored = true;
+          } else if (mutation === "focus")
+            await new Promise((resolve) => setTimeout(resolve, 80));
+        },
+      ),
+      detach: vi.fn(async () => undefined),
+    } as unknown as CDPSession;
+    const page = {
+      emulateMedia: vi.fn(async (options: { colorScheme?: string | null }) => {
+        if (options.colorScheme === null) {
+          if (mutation === "media") restored = true;
+          return;
+        }
+        if (mutation === "media")
+          await new Promise((resolve) => setTimeout(resolve, 80));
+      }),
+      isClosed: vi.fn(() => false),
+    } as unknown as Page;
+    const context = {
+      pages: () => [page],
+      newCDPSession: vi
+        .fn()
+        .mockResolvedValueOnce(discoverySession)
+        .mockResolvedValueOnce(environmentSession),
+    } as unknown as BrowserContext;
+    const browser = {
+      close: vi.fn(async () => undefined),
+      contexts: () => [context],
+      isConnected: vi.fn(() => true),
+      version: () => "late-environment",
+    };
+    await expect(
+      openPlaywrightScenarioBrowser(
+        scenario,
+        {},
+        {
+          launcher: {
+            connectOverCDP: async () => browser,
+            launchPersistentContext: async () => {
+              throw new Error("Unexpected launch");
+            },
           },
         },
-      },
-    ),
-  ).rejects.toMatchObject({
-    reason: "timeout",
-    userMessage: expect.stringContaining("Emulation.setEmulatedMedia"),
-  });
-  expect(restored).toBe(true);
-  expect(environmentSession.send).not.toHaveBeenCalledWith(
-    "Emulation.clearDeviceMetricsOverride",
-  );
-  expect(browser.close).toHaveBeenCalledOnce();
-});
+      ),
+    ).rejects.toMatchObject({
+      reason: "timeout",
+      userMessage: expect.stringContaining(
+        mutation === "media"
+          ? "Emulation.setEmulatedMedia"
+          : "Emulation.setFocusEmulationEnabled",
+      ),
+    });
+    expect(restored).toBe(true);
+    if (mutation === "media")
+      expect(environmentSession.send).not.toHaveBeenCalledWith(
+        "Emulation.clearDeviceMetricsOverride",
+      );
+    else
+      expect(environmentSession.send).toHaveBeenCalledWith(
+        "Emulation.clearDeviceMetricsOverride",
+      );
+    expect(browser.close).toHaveBeenCalledOnce();
+  },
+);
 
 it.each([
   new Error("Timeout unrelated launch diagnostic"),
@@ -1467,150 +1497,4 @@ it("keeps discovered transport credentials out of projected handshake timeouts",
   const projected = JSON.stringify(projectAnalysisError(failure));
   expect(projected).not.toContain("fixture-user");
   expect(projected).not.toContain("fixture-password");
-});
-
-const contextManagementRejection = (): Error =>
-  new Error(
-    "browserType.connectOverCDP: Protocol error (Browser.setDownloadBehavior): Browser context management is not supported.\nCall log:\n  - <ws connected>",
-  );
-
-const attachedRecoveryFixture = (
-  overrides: {
-    readonly openPageTarget?: typeof openCdpEndpointPageTarget;
-    readonly closePageTarget?: typeof closeCdpEndpointPageTarget;
-  } = {},
-) => {
-  const discoverySession = {
-    send: vi.fn(async () => ({ targetInfo: { targetId: "page-1" } })),
-    detach: vi.fn(async () => undefined),
-  } as unknown as CDPSession;
-  const environmentSession = {
-    send: vi.fn(async () => undefined),
-    detach: vi.fn(async () => undefined),
-  } as unknown as CDPSession;
-  const page = {
-    emulateMedia: vi.fn(async () => undefined),
-    isClosed: vi.fn(() => false),
-  } as unknown as Page;
-  const context = {
-    pages: () => [page],
-    newCDPSession: vi
-      .fn()
-      .mockResolvedValueOnce(discoverySession)
-      .mockResolvedValueOnce(environmentSession),
-  } as unknown as BrowserContext;
-  const connectedBrowser = {
-    close: vi.fn(async () => undefined),
-    contexts: vi.fn(() => [context]),
-    isConnected: vi.fn(() => true),
-    version: () => "fixture",
-  };
-  const connectOverCDP = vi.fn(
-    async (): Promise<
-      Pick<Browser, "contexts" | "close" | "isConnected" | "version">
-    > => {
-      throw new Error("unexpected connect");
-    },
-  );
-  const openPageTarget =
-    overrides.openPageTarget ??
-    (vi.fn(
-      async () => undefined,
-    ) as unknown as typeof openCdpEndpointPageTarget);
-  const closePageTarget =
-    overrides.closePageTarget ??
-    (vi.fn(
-      async () => undefined,
-    ) as unknown as typeof closeCdpEndpointPageTarget);
-  const scenario = browserScenarioSchema.parse({
-    browser: {
-      mode: "connect",
-      cdp_endpoint: "http://127.0.0.1:9222",
-      target_id: "page-1",
-    },
-    start_url: { url: "https://example.test" },
-    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
-  });
-  const open = () =>
-    openPlaywrightScenarioBrowser(
-      scenario,
-      {},
-      {
-        launcher: {
-          connectOverCDP,
-          launchPersistentContext: async () => {
-            throw new Error("Unexpected launch");
-          },
-        },
-        pageTargetCommands: { openPageTarget, closePageTarget },
-      },
-    );
-  return {
-    connectedBrowser,
-    connectOverCDP,
-    openPageTarget,
-    closePageTarget,
-    open,
-  };
-};
-
-it("opens a discovery page target when Chromium restricts the attached handshake", async () => {
-  const fixture = attachedRecoveryFixture({
-    openPageTarget: vi.fn(async () => "bootstrap-1"),
-  });
-  const browser = fixture.connectedBrowser;
-  fixture.connectOverCDP.mockImplementationOnce(async () => {
-    throw contextManagementRejection();
-  });
-  fixture.connectOverCDP.mockImplementationOnce(async () => browser);
-
-  const opened = await fixture.open();
-  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(2);
-  expect(fixture.openPageTarget).toHaveBeenCalledWith(
-    "http://127.0.0.1:9222",
-    "capture_browser_scenario",
-    undefined,
-  );
-  expect(opened.cleanup.browserClosed).toBe(false);
-  await opened.cleanup.close();
-  expect(fixture.closePageTarget).toHaveBeenCalledWith(
-    "http://127.0.0.1:9222",
-    "bootstrap-1",
-    "capture_browser_scenario",
-    undefined,
-  );
-  expect(browser.close).toHaveBeenCalledOnce();
-});
-
-it("does not open a discovery page target for unrelated handshake failures", async () => {
-  const fixture = attachedRecoveryFixture();
-  fixture.connectOverCDP.mockImplementationOnce(async () => {
-    throw new Error("browserType.connectOverCDP: endpoint unreachable");
-  });
-
-  await expect(fixture.open()).rejects.toThrow("endpoint unreachable");
-  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(1);
-  expect(fixture.openPageTarget).not.toHaveBeenCalled();
-  expect(fixture.closePageTarget).not.toHaveBeenCalled();
-});
-
-it("releases a discovery page target when the retry handshake still fails", async () => {
-  const fixture = attachedRecoveryFixture({
-    openPageTarget: vi.fn(async () => "bootstrap-2"),
-  });
-  fixture.connectOverCDP.mockImplementation(async () => {
-    throw contextManagementRejection();
-  });
-
-  await expect(fixture.open()).rejects.toThrow(
-    "Browser context management is not supported",
-  );
-  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(2);
-  expect(fixture.openPageTarget).toHaveBeenCalledTimes(1);
-  expect(fixture.closePageTarget).toHaveBeenCalledWith(
-    "http://127.0.0.1:9222",
-    "bootstrap-2",
-    "capture_browser_scenario",
-    undefined,
-  );
 });
