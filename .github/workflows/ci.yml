@@ -1,6 +1,11 @@
 name: Browser connect diagnosis (temporary, never merge)
 on:
   workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact production commit to verify (diagnostic workflow is never merged).
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
@@ -11,11 +16,18 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=1536
       UV_THREADPOOL_SIZE: 2
       GOMAXPROCS: 2
+    defaults:
+      run:
+        working-directory: subject
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_sha }}
+          path: subject
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          node-version-file: .nvmrc
+          node-version-file: subject/.nvmrc
       - run: npm ci --no-audit --no-fund
       - name: Provision isolated official verification tools
         shell: bash
@@ -35,7 +47,7 @@ jobs:
           printf '%s\n' "$chrome_url" > "$testroot/chrome.url"
           printf '%s\n' "CHROME_PATH=$testroot/chrome-$chrome_platform/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" >> "$GITHUB_ENV"
           printf '%s\n' "TESTROOT=$testroot" >> "$GITHUB_ENV"
-          npm install --prefix "$testroot/upstream" --ignore-scripts --no-audit --no-fund playwright-core@1.64.1
+          npm install --prefix "$testroot/baseline" --ignore-scripts --no-audit --no-fund playwright-core@1.58.2
           uname -a > "$testroot/platform.txt"
           node --version >> "$testroot/platform.txt"
       - run: npm run build:cached
@@ -45,9 +57,10 @@ jobs:
           set -euo pipefail
           "$CHROME_PATH" --version > "$TESTROOT/chrome.version"
           for display in headless headful; do
-            /usr/bin/time -l node scripts/verification/browserConnectMatrix.mjs "$CHROME_PATH" "$PWD/node_modules/playwright-core" "$TESTROOT/upstream/node_modules/playwright-core" "$TESTROOT/direct-$display.json" "$display" > "$TESTROOT/direct-$display.log" 2> "$TESTROOT/direct-$display.time"
-            /usr/bin/time -l node scripts/verification/browserConnectCliProbe.mjs "$PWD" "$TESTROOT/cli-$display" "$CHROME_PATH" "$display" > "$TESTROOT/cli-$display.log" 2> "$TESTROOT/cli-$display.time"
+            /usr/bin/time -l node ../scripts/verification/browserConnectMatrix.mjs "$CHROME_PATH" "$TESTROOT/baseline/node_modules/playwright-core" "$PWD/node_modules/playwright-core" "$TESTROOT/direct-$display.json" "$display" "$PWD" > "$TESTROOT/direct-$display.log" 2> "$TESTROOT/direct-$display.time"
+            /usr/bin/time -l node ../scripts/verification/browserConnectCliProbe.mjs "$PWD" "$TESTROOT/cli-$display" "$CHROME_PATH" "$display" > "$TESTROOT/cli-$display.log" 2> "$TESTROOT/cli-$display.time"
           done
+          REA_BROWSER_NO_SANDBOX=true /usr/bin/time -l node ../scripts/verification/browserConnectEnvironment.mjs "$PWD" "$CHROME_PATH" > "$TESTROOT/environment.log" 2> "$TESTROOT/environment.time"
       - name: Preserve bounded diagnostic evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
