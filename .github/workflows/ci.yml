@@ -2,6 +2,12 @@ name: Browser connect diagnosis (temporary, never merge)
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Select one bounded diagnostic lane.
+        required: true
+        type: choice
+        default: browser
+        options: [browser, windows-control]
       source_sha:
         description: Exact production commit to verify (diagnostic workflow is never merged).
         required: true
@@ -10,6 +16,7 @@ permissions:
   contents: read
 jobs:
   diagnose:
+    if: inputs.mode == 'browser'
     runs-on: macos-15
     timeout-minutes: 15
     env:
@@ -75,4 +82,43 @@ jobs:
             ${{ runner.temp }}/browser-connect-diagnosis/chrome.version
             ${{ runner.temp }}/browser-connect-diagnosis/chrome.url
             ${{ runner.temp }}/browser-connect-diagnosis/chrome.observed-sha256
+          retention-days: 7
+
+  windows-control:
+    if: inputs.mode == 'windows-control'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    env:
+      NODE_OPTIONS: --max-old-space-size=1536
+      UV_THREADPOOL_SIZE: 2
+      GOMAXPROCS: 2
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.source_sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build:cached
+      - name: Record exact baseline
+        shell: cmd
+        run: |
+          mkdir "%RUNNER_TEMP%\rea-windows-control"
+          git rev-parse HEAD > "%RUNNER_TEMP%\rea-windows-control\source.txt"
+          git rev-parse HEAD:tests/boundary/filesystem/ghidraJavaProbe.test.ts > "%RUNNER_TEMP%\rea-windows-control\test-blob.txt"
+      - name: Execute existing Java probe boundary on exact main
+        shell: cmd
+        run: |
+          node scripts/run-exact-tests.mjs run tests/boundary/filesystem/ghidraJavaProbe.test.ts --maxWorkers=1 --no-file-parallelism > "%RUNNER_TEMP%\rea-windows-control\tests.log" 2>&1
+          set test_status=%ERRORLEVEL%
+          echo %test_status% > "%RUNNER_TEMP%\rea-windows-control\exit.txt"
+          type "%RUNNER_TEMP%\rea-windows-control\tests.log"
+          exit /b %test_status%
+      - name: Preserve baseline outcome including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: windows-java-baseline
+          path: ${{ runner.temp }}/rea-windows-control/
           retention-days: 7
