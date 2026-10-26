@@ -22,6 +22,10 @@ import {
   openPlaywrightScenarioBrowser,
   PlaywrightScenarioBrowserCleanupOwner,
 } from "./PlaywrightScenarioBrowser.js";
+import {
+  closeCdpEndpointPageTarget,
+  openCdpEndpointPageTarget,
+} from "./CdpEndpointPageTarget.js";
 
 const hostPlatform = process.platform;
 
@@ -1463,4 +1467,150 @@ it("keeps discovered transport credentials out of projected handshake timeouts",
   const projected = JSON.stringify(projectAnalysisError(failure));
   expect(projected).not.toContain("fixture-user");
   expect(projected).not.toContain("fixture-password");
+});
+
+const contextManagementRejection = (): Error =>
+  new Error(
+    "browserType.connectOverCDP: Protocol error (Browser.setDownloadBehavior): Browser context management is not supported.\nCall log:\n  - <ws connected>",
+  );
+
+const attachedRecoveryFixture = (
+  overrides: {
+    readonly openPageTarget?: typeof openCdpEndpointPageTarget;
+    readonly closePageTarget?: typeof closeCdpEndpointPageTarget;
+  } = {},
+) => {
+  const discoverySession = {
+    send: vi.fn(async () => ({ targetInfo: { targetId: "page-1" } })),
+    detach: vi.fn(async () => undefined),
+  } as unknown as CDPSession;
+  const environmentSession = {
+    send: vi.fn(async () => undefined),
+    detach: vi.fn(async () => undefined),
+  } as unknown as CDPSession;
+  const page = {
+    emulateMedia: vi.fn(async () => undefined),
+    isClosed: vi.fn(() => false),
+  } as unknown as Page;
+  const context = {
+    pages: () => [page],
+    newCDPSession: vi
+      .fn()
+      .mockResolvedValueOnce(discoverySession)
+      .mockResolvedValueOnce(environmentSession),
+  } as unknown as BrowserContext;
+  const connectedBrowser = {
+    close: vi.fn(async () => undefined),
+    contexts: vi.fn(() => [context]),
+    isConnected: vi.fn(() => true),
+    version: () => "fixture",
+  };
+  const connectOverCDP = vi.fn(
+    async (): Promise<
+      Pick<Browser, "contexts" | "close" | "isConnected" | "version">
+    > => {
+      throw new Error("unexpected connect");
+    },
+  );
+  const openPageTarget =
+    overrides.openPageTarget ??
+    (vi.fn(
+      async () => undefined,
+    ) as unknown as typeof openCdpEndpointPageTarget);
+  const closePageTarget =
+    overrides.closePageTarget ??
+    (vi.fn(
+      async () => undefined,
+    ) as unknown as typeof closeCdpEndpointPageTarget);
+  const scenario = browserScenarioSchema.parse({
+    browser: {
+      mode: "connect",
+      cdp_endpoint: "http://127.0.0.1:9222",
+      target_id: "page-1",
+    },
+    start_url: { url: "https://example.test" },
+    actions: [{ step_id: "wait", action: "wait_for_timeout", duration_ms: 1 }],
+  });
+  const open = () =>
+    openPlaywrightScenarioBrowser(
+      scenario,
+      {},
+      {
+        launcher: {
+          connectOverCDP,
+          launchPersistentContext: async () => {
+            throw new Error("Unexpected launch");
+          },
+        },
+        pageTargetCommands: { openPageTarget, closePageTarget },
+      },
+    );
+  return {
+    connectedBrowser,
+    connectOverCDP,
+    openPageTarget,
+    closePageTarget,
+    open,
+  };
+};
+
+it("opens a discovery page target when Chromium restricts the attached handshake", async () => {
+  const fixture = attachedRecoveryFixture({
+    openPageTarget: vi.fn(async () => "bootstrap-1"),
+  });
+  const browser = fixture.connectedBrowser;
+  fixture.connectOverCDP.mockImplementationOnce(async () => {
+    throw contextManagementRejection();
+  });
+  fixture.connectOverCDP.mockImplementationOnce(async () => browser);
+
+  const opened = await fixture.open();
+  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(2);
+  expect(fixture.openPageTarget).toHaveBeenCalledWith(
+    "http://127.0.0.1:9222",
+    "capture_browser_scenario",
+    undefined,
+  );
+  expect(opened.cleanup.browserClosed).toBe(false);
+  await opened.cleanup.close();
+  expect(fixture.closePageTarget).toHaveBeenCalledWith(
+    "http://127.0.0.1:9222",
+    "bootstrap-1",
+    "capture_browser_scenario",
+    undefined,
+  );
+  expect(browser.close).toHaveBeenCalledOnce();
+});
+
+it("does not open a discovery page target for unrelated handshake failures", async () => {
+  const fixture = attachedRecoveryFixture();
+  fixture.connectOverCDP.mockImplementationOnce(async () => {
+    throw new Error("browserType.connectOverCDP: endpoint unreachable");
+  });
+
+  await expect(fixture.open()).rejects.toThrow("endpoint unreachable");
+  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(1);
+  expect(fixture.openPageTarget).not.toHaveBeenCalled();
+  expect(fixture.closePageTarget).not.toHaveBeenCalled();
+});
+
+it("releases a discovery page target when the retry handshake still fails", async () => {
+  const fixture = attachedRecoveryFixture({
+    openPageTarget: vi.fn(async () => "bootstrap-2"),
+  });
+  fixture.connectOverCDP.mockImplementation(async () => {
+    throw contextManagementRejection();
+  });
+
+  await expect(fixture.open()).rejects.toThrow(
+    "Browser context management is not supported",
+  );
+  expect(fixture.connectOverCDP).toHaveBeenCalledTimes(2);
+  expect(fixture.openPageTarget).toHaveBeenCalledTimes(1);
+  expect(fixture.closePageTarget).toHaveBeenCalledWith(
+    "http://127.0.0.1:9222",
+    "bootstrap-2",
+    "capture_browser_scenario",
+    undefined,
+  );
 });
