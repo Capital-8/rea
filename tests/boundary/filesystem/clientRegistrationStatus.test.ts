@@ -87,19 +87,19 @@ describe("client registration status", () => {
           client: "cursor",
           state: "stale",
           command: [foreignEntry, "mcp"],
-          remediation: expect.any(String),
+          remediation: expect.stringMatching(/\S/u),
         }),
         expect.objectContaining({
           client: "gemini_cli",
           state: "invalid",
           command: [],
-          remediation: expect.any(String),
+          remediation: expect.stringMatching(/\S/u),
         }),
         expect.objectContaining({
           client: "claude_code",
           state: "missing",
           command: [],
-          remediation: expect.any(String),
+          remediation: expect.stringMatching(/\S/u),
         }),
       ]),
     );
@@ -758,7 +758,7 @@ it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
         config_path: path,
         state: "invalid",
         command: [],
-        remediation: expect.any(String),
+        remediation: expect.stringMatching(/\S/u),
       });
       expect(
         (await existingMaintenanceScope(home, "/current/rea", process.env))
