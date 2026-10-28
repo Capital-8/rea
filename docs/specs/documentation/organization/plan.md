@@ -32,7 +32,7 @@ then compare emitted HTML routes with the pre-migration guide inventory. Inspect
 the diff for unintended text rewrites and retained generated ownership. Run the
 repository static checks before requesting review.
 
-Keep a reproducible built-HTML verifier with an independent 57-route baseline,
+Keep a reproducible built-HTML verifier with an independent 58-route baseline,
 including the new upstream signal guide. Verify physical edit targets, local
 published files/images and fragment IDs rather than treating a successful build
 as sufficient link verification. Normalize references to docs/public at the

@@ -34,6 +34,7 @@ product pages. The VitePress documentation source is this `docs/` tree.
 - [Browser scenario contract](guides/web/browser-scenario-contract.md)
 - [Website runtime source attribution](guides/web/web-runtime.md)
 - [Historical web network captures](guides/web/web-network-captures.md)
+- [HTTP/3 capture lab](http3-capture-lab.md)
 - [Captured website source locations](guides/web/web-source-location.md)
 - [Captured website module relationships](guides/web/website-module-trace.md)
 - [Captured website scripts and static JavaScript analysis](guides/web/website-script-export.md)

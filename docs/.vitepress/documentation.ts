@@ -114,6 +114,11 @@ export const documentationSections = [
         route: "/web-network-captures",
       },
       {
+        text: "HTTP/3 capture lab",
+        source: "http3-capture-lab.md",
+        route: "/http3-capture-lab",
+      },
+      {
         text: "Captured website source locations",
         source: "guides/web/web-source-location.md",
         route: "/web-source-location",
@@ -379,6 +384,9 @@ export const documentationSections = [
 
 export const documentationRewrites = Object.fromEntries(
   documentationSections.flatMap((section) =>
-    section.items.map((item) => [item.source, `${item.route.slice(1)}.md`]),
+    section.items.flatMap((item) => {
+      const target = `${item.route.slice(1)}.md`;
+      return item.source === target ? [] : [[item.source, target]];
+    }),
   ),
 );

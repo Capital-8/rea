@@ -16,7 +16,10 @@ const shellExamples = (content: string): string[] =>
 
 describe("onboarding documentation product facts", () => {
   it.each([
-    ["docs/guides/native/native-investigation.md", "../../providers/raw-binary.md#nmos-6502"],
+    [
+      "docs/guides/native/native-investigation.md",
+      "../../providers/raw-binary.md#nmos-6502",
+    ],
     ["docs/providers/ghidra-riscv.md", "raw-binary.md"],
   ])(
     "routes raw admission guidance in %s to the owning guide",

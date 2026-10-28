@@ -25,3 +25,8 @@ The renderer treats physical docs/public references as site-root assets.
 The managed guide retains its original heading and an explicit historical fragment
 alias. External HTTP targets were not fetched; this verification concerns actual
 local production HTML and source files.
+
+The HTTP/3 lab was added to the documentation directory, navigation, and the
+independent route baseline. The built-HTML verifier passed for 58 stable routes,
+76 HTML pages, 74 physical edit links, and 627 distinct local targets or anchors.
+The documentation and translated README consistency checks also passed.

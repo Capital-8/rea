@@ -10,7 +10,7 @@ adb-device-analysis android-analysis apktool-resource-analysis apple-application
 binary-diagnostics browser-observation browser-scenario-contract cli client-configuration
 client-verification electron-observation evm-bytecode firmware-analysis flutter-analysis
 frida-instrumentation ghidra-dos ghidra-mips ghidra-nativeaot ghidra-provider ghidra-psp
-ghidra-riscv go-binaries harmony-analysis ida-provider installation
+ghidra-riscv go-binaries harmony-analysis http3-capture-lab ida-provider installation
 javascript-application-graph javascript-application-workflows javascript-artifact-reconstruction
 javascript-recovery javascript-runtime-observation javascript-runtime-reconciliation
 jeb-analysis managed-code-analysis mcp-contracts mcp-prompts migration-6.2
@@ -21,7 +21,7 @@ website-module-trace website-script-export windows-ghidra-p0
 `
   .trim()
   .split(/\s+/u);
-assert.equal(routes.length, 57);
+assert.equal(routes.length, 58);
 assert.equal(new Set(routes).size, routes.length);
 
 const documentation = resolve(
