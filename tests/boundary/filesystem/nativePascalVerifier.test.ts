@@ -16,11 +16,7 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 it("uses the canonical spelling for a verifier directory allocated through a symlink", async () => {
   const root = await createTestTempDirectory("rea-pascal-verifier-path-");
   const alias = join(root, "alias");
-  await symlink(
-    root,
-    alias,
-    process.platform === "win32" ? "junction" : "dir",
-  );
+  await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
   const allocated = await createCanonicalTemporaryDirectory(
     "rea-pascal-calls-",
     alias,

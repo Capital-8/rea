@@ -62,9 +62,8 @@ const callerLines = new Set(
     return matches[0];
   }),
 );
-const allocatedDirectory = await createCanonicalTemporaryDirectory(
-  "rea-pascal-calls-",
-);
+const allocatedDirectory =
+  await createCanonicalTemporaryDirectory("rea-pascal-calls-");
 let directory = allocatedDirectory.path;
 const input = {
   breakpoints: [{ kind: "function", name: "rea_pascal_call" }],

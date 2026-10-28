@@ -32,6 +32,12 @@ const tracer: NativeCallTracer & { calls: number } = {
   calls: 0,
   trace(request) {
     this.calls++;
+    expect(request.input.environment).toEqual(
+      JSON.parse(
+        '{"__proto__":"selected literal value","constructor":"ordinary value"}',
+      ),
+    );
+    expect(Object.hasOwn(request.input.environment, "__proto__")).toBe(true);
     return Promise.resolve(
       ok({
         debugger: {
@@ -122,6 +128,9 @@ it("routes observe_native_calls through MCP with schema-checked input and output
       arguments: {
         breakpoints: [{ kind: "function", name: "open" }],
         duration_ms: 1000,
+        environment: JSON.parse(
+          '{"__proto__":"selected literal value","constructor":"ordinary value"}',
+        ),
       },
     });
     expect(called.isError, JSON.stringify(called.structuredContent)).not.toBe(
@@ -138,10 +147,38 @@ it("routes observe_native_calls through MCP with schema-checked input and output
       line: 23,
       column: null,
     });
+
+    expect(result.target.environment).toEqual(
+      JSON.parse(
+        '{"__proto__":"selected literal value","constructor":"ordinary value"}',
+      ),
+    );
+    expect(Object.hasOwn(result.target.environment, "__proto__")).toBe(true);
     expect(result.breakpoints[0]?.request).toEqual({
       kind: "function",
       name: "open",
       module: null,
+    });
+    const invalidEnvironment = await client.callTool({
+      name: "observe_native_calls",
+      arguments: {
+        breakpoints: [{ kind: "function", name: "open" }],
+        environment: JSON.parse('{"__proto__":7}'),
+      },
+    });
+    expect(parseMcpToolError(invalidEnvironment).error).toMatchObject({
+      code: "invalid_request",
+      details: {
+        issues: [
+          expect.objectContaining({
+            path: [],
+            reason: "invalid_value",
+            message: expect.stringMatching(
+              /environment\.__proto__:.*expected string, received number/u,
+            ),
+          }),
+        ],
+      },
     });
     const rejected = await client.callTool({
       name: "observe_native_calls",

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { TOOL_CONTRACTS } from "../../../src/contracts/toolContracts.js";
 import { COMPACT_INPUT_SCHEMA_BUDGET_BYTES } from "../../../src/config/mcpInputSchemaProfile.js";
 import { EvidenceMcpServer } from "../../../src/server/EvidenceMcpServer.js";
-import { ToolResultDelivery } from "../../../src/server/toolResult.js";
+import { createToolResultDelivery } from "../../../src/server/toolResult.js";
 import { toolRegistrationOptions } from "../../../src/server/toolRegistrationOptions.js";
 
 const createServer = (profile: "full" | "compact"): EvidenceMcpServer =>
@@ -14,7 +14,7 @@ const createServer = (profile: "full" | "compact"): EvidenceMcpServer =>
     { name: "tool-input-admission-test", version: "0" },
     { capabilities: {} },
     undefined,
-    new ToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE),
+    createToolResultDelivery(STDIO_DEFAULT_MAX_BUFFER_SIZE),
     profile === "compact"
       ? { budgetBytes: COMPACT_INPUT_SCHEMA_BUDGET_BYTES }
       : undefined,
@@ -59,7 +59,7 @@ describe("catalog-wide MCP input admission", () => {
         expect(TOOL_CONTRACTS.length).toBeGreaterThan(0);
         for (const contract of TOOL_CONTRACTS) {
           const input = {
-            ...(contract.examples[0]?.input ?? {}),
+            ...contract.examples[0]?.input,
             __rea_unknown_admission_probe__: true,
           };
           expect(contract.inputSchema.safeParse(input).success).toBe(false);

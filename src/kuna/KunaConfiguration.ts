@@ -1,5 +1,6 @@
-import { isAbsolute, join } from "node:path";
+import { isAbsolute } from "node:path";
 
+import { defaultKunaCacheDirectory } from "../config/kunaCacheDirectory.js";
 import { homeDirectoryFromEnvironment } from "../config/homeDirectory.js";
 import { providerStartupTimeoutSchema } from "../config/providerStartupTimeout.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -17,6 +18,9 @@ const MAX_KUNA_JOBS = 32;
  * without an unbounded run. Larger images need a raised deadline or more jobs.
  */
 const DEFAULT_PROJECT_TIMEOUT_MS = 30 * 60 * 1000;
+
+/** One function decompiles in well under a second; sqlite3VdbeExec (42 KB) took 15-25 s. */
+const DEFAULT_FUNCTION_TIMEOUT_MS = 120_000;
 
 /**
  * A serial (`--jobs 1`) export is Kuna's reference answer: it decompiles
@@ -39,42 +43,62 @@ export interface KunaConfiguration {
   readonly cacheRoot: string;
   readonly cacheMaxBytes: number;
   readonly projectTimeoutMs: number;
+  /** Deadline for one single-function `kuna decompile` run. */
+  readonly functionTimeoutMs: number;
   readonly jobs: number;
 }
+
+/** One configured deadline and the setting that owns it. */
+export interface KunaDeadline {
+  readonly setting: "REA_KUNA_TIMEOUT_MS" | "REA_KUNA_PROJECT_TIMEOUT_MS";
+  readonly ms: number;
+}
+
+/** Single-function decompiles and the standalone inventory. */
+export const kunaFunctionDeadline = (
+  configuration: KunaConfiguration,
+): KunaDeadline => ({
+  setting: "REA_KUNA_TIMEOUT_MS",
+  ms: configuration.functionTimeoutMs,
+});
+
+/** The project export and whole-program string, graph and xref scans. */
+export const kunaProjectDeadline = (
+  configuration: KunaConfiguration,
+): KunaDeadline => ({
+  setting: "REA_KUNA_PROJECT_TIMEOUT_MS",
+  ms: configuration.projectTimeoutMs,
+});
 
 /** Why the configured environment cannot select a Kuna installation. */
 export interface KunaConfigurationFailure {
   readonly code: "not_configured" | "open_options_invalid" | "unsupported_host";
   readonly reason: string;
   readonly setting: string | null;
+  readonly remediation: string;
 }
 
 const failure = (
   code: KunaConfigurationFailure["code"],
   reason: string,
   setting: string | null = null,
-): Result<never, KunaConfigurationFailure> => err({ code, reason, setting });
+): Result<never, KunaConfigurationFailure> =>
+  err({
+    code,
+    reason,
+    setting,
+    remediation:
+      code === "unsupported_host"
+        ? KUNA_UNSUPPORTED_HOST_REMEDIATION
+        : setting === null || setting === "REA_KUNA_COMMAND"
+          ? KUNA_COMMAND_REMEDIATION
+          : `Correct ${setting} to meet the reported constraint, or unset it to use its default. Restart REA after changing the environment.`,
+  });
 
 const positiveInteger = (value: string): number | undefined =>
   /^[1-9]\d*$/u.test(value) && Number.isSafeInteger(Number(value))
     ? Number(value)
     : undefined;
-
-/** Per-user cache directory that REA owns for Kuna on this host. */
-const defaultCacheRoot = (
-  environment: Readonly<NodeJS.ProcessEnv>,
-  platform: NodeJS.Platform,
-): string => {
-  const home = homeDirectoryFromEnvironment(environment, platform);
-  if (platform === "darwin")
-    return join(home, "Library", "Caches", "rea", "kuna");
-  const xdg = environment.XDG_CACHE_HOME;
-  return join(
-    xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".cache"),
-    "rea",
-    "kuna",
-  );
-};
 
 /** Parse the Kuna settings without touching the filesystem or the executable. */
 export const readKunaConfiguration = (
@@ -125,6 +149,18 @@ export const readKunaConfiguration = (
       "REA_KUNA_PROJECT_TIMEOUT_MS",
     );
 
+  const rawFunctionTimeout = environment.REA_KUNA_TIMEOUT_MS;
+  const functionTimeout =
+    rawFunctionTimeout === undefined
+      ? undefined
+      : providerStartupTimeoutSchema.safeParse(rawFunctionTimeout);
+  if (functionTimeout !== undefined && !functionTimeout.success)
+    return failure(
+      "open_options_invalid",
+      `REA_KUNA_TIMEOUT_MS must be a decimal millisecond count from 1 to 2147483647; received ${String(rawFunctionTimeout)}.`,
+      "REA_KUNA_TIMEOUT_MS",
+    );
+
   const rawJobs = environment.REA_KUNA_JOBS;
   const jobs = rawJobs === undefined ? DEFAULT_JOBS : positiveInteger(rawJobs);
   if (jobs === undefined || jobs > MAX_KUNA_JOBS)
@@ -136,9 +172,16 @@ export const readKunaConfiguration = (
 
   return ok({
     command,
-    cacheRoot: cacheRoot ?? defaultCacheRoot(environment, platform),
+    cacheRoot:
+      cacheRoot ??
+      defaultKunaCacheDirectory(
+        homeDirectoryFromEnvironment(environment, platform),
+        environment,
+        platform,
+      ),
     cacheMaxBytes,
     projectTimeoutMs: timeout?.data ?? DEFAULT_PROJECT_TIMEOUT_MS,
+    functionTimeoutMs: functionTimeout?.data ?? DEFAULT_FUNCTION_TIMEOUT_MS,
     jobs,
   });
 };

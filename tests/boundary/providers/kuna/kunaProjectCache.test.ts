@@ -1,20 +1,24 @@
 import { createHash } from "node:crypto";
 import {
+  access,
   appendFile,
   chmod,
   mkdir,
   readdir,
+  realpath,
+  symlink,
   readFile,
   rename,
   rm,
   utimes,
   writeFile,
 } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
+import canonicalize from "canonicalize";
 
-import { expect, it as test } from "vitest";
+import { expect, it as test, vi } from "vitest";
 
-import { inspectKunaInstallation } from "../../../../src/kuna/KunaInstallation.js";
+import { inspectKunaInstallationOwned as inspectKunaInstallation } from "./kunaResourceScope.js";
 import { cleanupOwnedProcessGroup } from "../../../../src/process/ProcessOwnership.js";
 import { spawnOwnedProviderProcess } from "../../../../src/process/ProviderProcess.js";
 import type { KunaInstallation } from "../../../../src/kuna/KunaInstallation.js";
@@ -24,6 +28,10 @@ import {
 } from "../../../../src/kuna/KunaProjectCache.js";
 import type { KunaExportStatus } from "../../../../src/kuna/KunaProjectExport.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
+import { OwnedFileHandle } from "../../../../src/filesystem/OwnedFileHandle.js";
+import { RegularFileCleanupFailure } from "../../../../src/filesystem/OwnedRegularFile.js";
+import * as stableFileHash from "../../../../src/filesystem/StableFileHash.js";
+import { ProviderCleanupError } from "../../../../src/domain/providerCleanupError.js";
 import {
   fakeKunaCalls,
   setFakeKunaBehavior,
@@ -78,7 +86,10 @@ const newCache = (installation: KunaInstallation, maxBytes = 64 * 1024 ** 2) =>
 const keyOf = (installation: KunaInstallation, target: Target) =>
   kunaProjectKey({
     targetSha256: target.targetSha256,
+    targetBasename: basename(target.targetPath),
     kunaSha256: installation.sha256,
+    kunaCommand: installation.configuration.command,
+    kunaExecutable: installation.executable,
     kunaVersion: installation.version,
     jobs: installation.configuration.jobs,
   });
@@ -96,6 +107,127 @@ const processGone = (pid: number): boolean => {
   } catch {
     return true;
   }
+};
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (cause: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+};
+
+it.each([1, 2])(
+  "regenerates layout %i once and retires it without touching unrelated cache resources",
+  async (layout) => {
+    const { kuna, installation, cacheRoot, cache, target } = await fixture(
+      "rea-kuna-cache-format-transition-",
+    );
+    const input = await target("program");
+    const initial = await cache.build({ installation, ...input });
+    if (!initial.ok) throw initial.error;
+    expect((await cache.close()).ok).toBe(true);
+    // Seed the previously shipped manifest and content-key format using a real
+    // authored export; omitted launcher identity must never be invented or reused.
+    const legacyKey = createHash("sha256")
+      .update(
+        canonicalize({
+          layout,
+          target_sha256: input.targetSha256,
+          kuna_sha256: installation.sha256,
+          ...(layout === 2
+            ? {
+                kuna_command: installation.configuration.command,
+                kuna_executable: installation.executable,
+              }
+            : {}),
+          kuna_version: installation.version,
+          export: {
+            command: "decompile-project",
+            jobs: installation.configuration.jobs,
+          },
+        }) ?? "",
+      )
+      .digest("hex");
+    const legacyEntry = join(cacheRoot, "projects", legacyKey);
+    await rename(join(cacheRoot, "projects", initial.value.key), legacyEntry);
+    await writeFile(
+      join(legacyEntry, "manifest.json"),
+      JSON.stringify({
+        ...initial.value.manifest,
+        layout,
+        key: legacyKey,
+        inputs: {
+          target_sha256: input.targetSha256,
+          kuna_sha256: installation.sha256,
+          ...(layout === 2
+            ? {
+                kuna_command: installation.configuration.command,
+                kuna_executable: installation.executable,
+              }
+            : {}),
+          kuna_version: installation.version,
+          jobs: installation.configuration.jobs,
+        },
+      }),
+    );
+    const unknown = join(cacheRoot, "projects", "unrelated-directory");
+    const unresolved = join(cacheRoot, "staging", "build-unresolved");
+    await mkdir(unknown);
+    await mkdir(unresolved);
+    await writeFile(join(unknown, "sentinel"), "preserve");
+    await writeFile(join(unresolved, "sentinel"), "preserve");
+    const migrated = newCache(installation);
+    try {
+      const built = await migrated.build({ installation, ...input });
+      if (!built.ok) throw built.error;
+      await expect(access(legacyEntry)).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      expect(built.value.key).not.toBe(legacyKey);
+      expect(built.value.manifest).toMatchObject({
+        layout: 3,
+        inputs: {
+          kuna_command: installation.configuration.command,
+          kuna_executable: installation.executable,
+        },
+      });
+      expect(await callsOf(kuna, "decompile-project")).toHaveLength(2);
+      const fresh = newCache(installation);
+      try {
+        const reused = await fresh.build({ installation, ...input });
+        if (!reused.ok) throw reused.error;
+        expect(reused.value.manifest).toEqual(built.value.manifest);
+        expect(await callsOf(kuna, "decompile-project")).toHaveLength(2);
+      } finally {
+        expect((await fresh.close()).ok).toBe(true);
+      }
+      expect(await readFile(join(unknown, "sentinel"), "utf8")).toBe(
+        "preserve",
+      );
+      expect(await readFile(join(unresolved, "sentinel"), "utf8")).toBe(
+        "preserve",
+      );
+      expect(await entries(cacheRoot, "trash")).toEqual([]);
+    } finally {
+      expect((await migrated.close()).ok).toBe(true);
+    }
+  },
+);
+
+const causesOf = (cause: unknown): unknown[] => {
+  const pending = [cause];
+  const seen = new Set<unknown>();
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!(current instanceof Error) || seen.has(current)) continue;
+    seen.add(current);
+    if (current.cause !== undefined) pending.push(current.cause);
+    if (current instanceof AggregateError) pending.push(...current.errors);
+  }
+  return [...seen];
 };
 
 it("publishes a verified export and serves later requests from the cache", async () => {
@@ -123,7 +255,7 @@ it("publishes a verified export and serves later requests from the cache", async
     value: {
       key: keyOf(installation, input),
       manifest: {
-        layout: 1,
+        layout: 3,
         inputs: {
           target_sha256: input.targetSha256,
           kuna_sha256: installation.sha256,
@@ -186,6 +318,355 @@ it("publishes a verified export and serves later requests from the cache", async
     inventory: built.value.inventory,
   });
   expect(await callsOf(kuna, "decompile-project")).toHaveLength(1);
+});
+
+it("retains a failed warm-cache hash descriptor and retries it at cache close", async () => {
+  const { installation, cache, target } = await fixture(
+    "rea-kuna-cache-hash-owner-",
+  );
+  const input = await target("program");
+  const built = await cache.build({ installation, ...input });
+  if (!built.ok) throw built.error;
+  const closeCause = new Error("injected warm-cache descriptor close failure");
+  const close = vi
+    .spyOn(OwnedFileHandle.prototype, "close")
+    .mockRejectedValueOnce(closeCause);
+  const warmCache = newCache(installation);
+  try {
+    const failure = await warmCache
+      .lookup(built.value.key)
+      .catch((cause: unknown) => cause);
+    expect(failure).toBeInstanceOf(ProviderCleanupError);
+    if (!(failure instanceof ProviderCleanupError)) throw failure;
+    expect(failure.cause).toBeInstanceOf(RegularFileCleanupFailure);
+    close.mockRestore();
+    expect(await warmCache.close()).toEqual({ ok: true, value: null });
+    expect(failure.cleanupIncomplete).toBe(false);
+    expect(await warmCache.lookup(built.value.key)).toMatchObject({
+      key: built.value.key,
+    });
+  } finally {
+    close.mockRestore();
+    expect(await warmCache.close()).toEqual({ ok: true, value: null });
+    await cache.close();
+  }
+});
+
+it.each(["success", "failure"] as const)(
+  "keeps hash cleanup bound to its exact owner when a concurrent lookup retry %s",
+  async (retryOutcome) => {
+    const { installation, cache, target } = await fixture(
+      `rea-kuna-cache-hash-race-${retryOutcome}-`,
+    );
+    const input = await target("program");
+    const built = await cache.build({ installation, ...input });
+    if (!built.ok) throw built.error;
+
+    const warmCache = newCache(installation);
+    const initialCloseFailure = new Error("initial descriptor close failure");
+    const retryCloseFailure = new Error("concurrent retry close failure");
+    const initialClose = deferred<void>();
+    const retryGate = deferred<void>();
+    const initialCloseEntered = deferred<void>();
+    const retryEntered = deferred<void>();
+    const closeCounts = new Map<OwnedFileHandle, number>();
+    let retainedOwner: OwnedFileHandle | undefined;
+    let concurrentLookup: Promise<unknown> | undefined;
+    const closeOwner = OwnedFileHandle.prototype.close;
+    const close = vi
+      .spyOn(OwnedFileHandle.prototype, "close")
+      .mockImplementation(function (this: OwnedFileHandle) {
+        const count = (closeCounts.get(this) ?? 0) + 1;
+        closeCounts.set(this, count);
+        if (count === 1 && retainedOwner === undefined) {
+          retainedOwner = this;
+          initialCloseEntered.resolve();
+          return initialClose.promise;
+        }
+        if (this === retainedOwner && count === 2) {
+          retryEntered.resolve();
+          return retryGate.promise.then(async () => {
+            if (retryOutcome === "failure") throw retryCloseFailure;
+            await closeOwner.call(this);
+          });
+        }
+        return closeOwner.call(this);
+      });
+
+    try {
+      const firstLookup = warmCache
+        .lookup(built.value.key)
+        .catch((cause) => cause);
+      await initialCloseEntered.promise;
+      initialClose.reject(initialCloseFailure);
+      // The failed descriptor is retained before the first lookup binds its
+      // originating error, so this lookup begins the retry in that window.
+      queueMicrotask(() => {
+        concurrentLookup = warmCache
+          .lookup(built.value.key)
+          .catch((cause: unknown) => cause);
+      });
+      await retryEntered.promise;
+
+      const firstFailure = await firstLookup;
+      expect(firstFailure).toBeInstanceOf(ProviderCleanupError);
+      if (!(firstFailure instanceof ProviderCleanupError)) throw firstFailure;
+      expect(firstFailure.cleanupIncomplete).toBe(true);
+      retryGate.resolve();
+      if (concurrentLookup === undefined)
+        throw new Error("Concurrent lookup did not start");
+      const retryResult = await concurrentLookup;
+
+      if (retryOutcome === "success") {
+        expect(retryResult).toMatchObject({ key: built.value.key });
+        // Closing the retained owner resolves the already-bound operation error.
+        expect(firstFailure.cleanupIncomplete).toBe(false);
+      } else {
+        expect(retryResult).toBeInstanceOf(ProviderCleanupError);
+        if (!(retryResult instanceof ProviderCleanupError)) throw retryResult;
+        const retryCause = retryResult.cause;
+        expect(retryCause).toBeInstanceOf(AggregateError);
+        if (!(retryCause instanceof AggregateError)) throw retryCause;
+        const retryCauses = causesOf(retryCause);
+        expect(retryCauses).toContain(firstFailure);
+        expect(retryCauses).toContain(retryCloseFailure);
+
+        // The next confirmed close recovers both errors without admitting an
+        // extra read in between the failed retry and recovery.
+        close.mockRestore();
+        expect(await warmCache.lookup(built.value.key)).toMatchObject({
+          key: built.value.key,
+        });
+        expect(firstFailure.cleanupIncomplete).toBe(false);
+        expect(retryResult.cleanupIncomplete).toBe(false);
+      }
+    } finally {
+      close.mockRestore();
+      expect(await warmCache.close()).toEqual({ ok: true, value: null });
+      await cache.close();
+    }
+  },
+);
+
+it("resolves a hash failure delivered after its retained owner was released", async () => {
+  const { installation, cache, target } = await fixture(
+    "rea-kuna-cache-late-hash-",
+  );
+  const built = await cache.build({
+    installation,
+    ...(await target("program")),
+  });
+  if (!built.ok) throw built.error;
+  const warmCache = newCache(installation);
+  const failureRetained = deferred<void>();
+  const deliverFailure = deferred<void>();
+  const hashFile = stableFileHash.observeStableFile;
+  const hash = vi
+    .spyOn(stableFileHash, "observeStableFile")
+    .mockImplementation(async (...args) => {
+      try {
+        return await hashFile(...args);
+      } catch (cause: unknown) {
+        if (!(cause instanceof RegularFileCleanupFailure)) throw cause;
+        failureRetained.resolve();
+        await deliverFailure.promise;
+        throw cause;
+      }
+    });
+  const closeCause = new Error("initial hash descriptor close failure");
+  const close = vi
+    .spyOn(OwnedFileHandle.prototype, "close")
+    .mockRejectedValueOnce(closeCause);
+  const firstLookup = warmCache
+    .lookup(built.value.key)
+    .catch((cause: unknown) => cause);
+  try {
+    await failureRetained.promise;
+    expect(warmCache.hasPendingCleanup).toBe(true);
+    expect(await warmCache.lookup(built.value.key)).toMatchObject({
+      key: built.value.key,
+    });
+    expect(warmCache.hasPendingCleanup).toBe(false);
+    deliverFailure.resolve();
+    const error = await firstLookup;
+    expect(error).toBeInstanceOf(ProviderCleanupError);
+    if (!(error instanceof ProviderCleanupError)) throw error;
+    expect(error.cleanupIncomplete).toBe(false);
+    expect(error.cause).toBeInstanceOf(RegularFileCleanupFailure);
+    if (!(error.cause instanceof RegularFileCleanupFailure)) throw error.cause;
+    expect(error.cause.cleanupCause).toBe(closeCause);
+    expect(error.cause.owner.handle.fd).toBe(-1);
+  } finally {
+    deliverFailure.resolve();
+    await firstLookup;
+    hash.mockRestore();
+    close.mockRestore();
+    expect(await warmCache.close()).toEqual({ ok: true, value: null });
+    await cache.close();
+  }
+});
+
+it("blocks repeated cache reads while a retained hash descriptor cannot close", async () => {
+  const { installation, cache, target } = await fixture(
+    "rea-kuna-cache-hash-admission-",
+  );
+  const input = await target("program");
+  const built = await cache.build({ installation, ...input });
+  if (!built.ok) throw built.error;
+  const otherBuilt = await cache.build({
+    installation,
+    ...(await target("other")),
+  });
+  if (!otherBuilt.ok) throw otherBuilt.error;
+  const keys = [built.value.key, otherBuilt.value.key] as const;
+
+  const warmCache = newCache(installation);
+  const owners = new Set<OwnedFileHandle>();
+  const persistentCloseCause = new Error("persistent descriptor close failure");
+  const blocked: ProviderCleanupError[] = [];
+  const blockedByKey = new Map<string, ProviderCleanupError[]>();
+  let closeAggregate: ProviderCleanupError | undefined;
+  const close = vi
+    .spyOn(OwnedFileHandle.prototype, "close")
+    .mockImplementation(function (this: OwnedFileHandle) {
+      owners.add(this);
+      return Promise.reject(persistentCloseCause);
+    });
+  try {
+    for (const key of keys)
+      await expect(warmCache.lookup(key)).rejects.toMatchObject({
+        cleanupIncomplete: true,
+        cause: expect.any(RegularFileCleanupFailure),
+      });
+    expect(owners.size).toBe(2);
+    expect(warmCache.hasPendingCleanup).toBe(true);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      for (const key of keys) {
+        try {
+          await warmCache.lookup(key);
+          throw new Error("Lookup admitted a read with a retained descriptor");
+        } catch (cause: unknown) {
+          expect(cause).toBeInstanceOf(ProviderCleanupError);
+          if (!(cause instanceof ProviderCleanupError)) throw cause;
+          blocked.push(cause);
+          const failures = blockedByKey.get(key) ?? [];
+          failures.push(cause);
+          blockedByKey.set(key, failures);
+        }
+      }
+    }
+
+    // Each key retries its exact descriptor without admitting another read.
+    expect(owners.size).toBe(2);
+    expect(warmCache.hasPendingCleanup).toBe(true);
+
+    for (const failures of blockedByKey.values()) {
+      expect(failures).toHaveLength(3);
+      const originals = new Set<unknown>();
+      for (const failure of failures) {
+        const retry = (failure.cause as AggregateError).errors[0];
+        expect(retry).toBeInstanceOf(ProviderCleanupError);
+        if (!(retry instanceof ProviderCleanupError)) throw retry;
+        const causes = (retry.cause as AggregateError).errors;
+        expect(causes).toHaveLength(2);
+        originals.add(causes[0]);
+        expect(causes[1]).toBe(persistentCloseCause);
+      }
+      expect(originals.size).toBe(1);
+    }
+    const closed = await warmCache.close();
+    expect(closed.ok).toBe(false);
+    if (closed.ok) throw new Error("Close lost the retained hash owner");
+    expect(closed.error.cleanupIncomplete).toBe(true);
+    expect(new Set(closed.error.cleanupResources).size).toBe(2);
+    closeAggregate = closed.error;
+    blocked.push(closed.error);
+  } finally {
+    close.mockRestore();
+  }
+
+  expect(await warmCache.lookup(keys[0])).toMatchObject({ key: keys[0] });
+  expect(warmCache.hasPendingCleanup).toBe(true);
+  if (closeAggregate === undefined) throw new Error("Missing close aggregate");
+  expect(closeAggregate.cleanupIncomplete).toBe(true);
+  for (const failure of blockedByKey.get(keys[0]) ?? [])
+    expect(failure.cleanupIncomplete).toBe(false);
+  for (const failure of blockedByKey.get(keys[1]) ?? [])
+    expect(failure.cleanupIncomplete).toBe(true);
+  expect(await warmCache.lookup(keys[1])).toMatchObject({ key: keys[1] });
+  expect(warmCache.hasPendingCleanup).toBe(false);
+  for (const [index, failure] of blocked.entries())
+    expect(failure.cleanupIncomplete, `failed aggregate ${String(index)}`).toBe(
+      false,
+    );
+  expect(await warmCache.close()).toEqual({ ok: true, value: null });
+  await cache.close();
+});
+
+it("keeps hash cleanup aggregates pending through retained staging removal", async () => {
+  const { installation, cacheRoot, cache, target } = await fixture(
+    "rea-kuna-cache-hash-staging-owner-",
+  );
+  const persistentCloseCause = new Error(
+    "persistent staging hash close failure",
+  );
+  const close = vi
+    .spyOn(OwnedFileHandle.prototype, "close")
+    .mockRejectedValue(persistentCloseCause);
+  let stagingPath: string | undefined;
+  let retainedPath: string | undefined;
+  let buildFailure: ProviderCleanupError | undefined;
+  const aggregates: ProviderCleanupError[] = [];
+  try {
+    const built = await cache.build({
+      installation,
+      ...(await target("program")),
+    });
+    expect(built.ok).toBe(false);
+    if (built.ok) throw new Error("Expected the retained hash close to fail");
+    expect(built.error).toBeInstanceOf(ProviderCleanupError);
+    if (!(built.error instanceof ProviderCleanupError)) throw built.error;
+    buildFailure = built.error;
+
+    const [staging] = await entries(cacheRoot, "staging");
+    expect(staging).toBeDefined();
+    if (staging === undefined) throw new Error("Missing retained staging");
+    stagingPath = join(cacheRoot, "staging", staging);
+    await chmod(stagingPath, 0o500);
+
+    const firstClose = await cache.close();
+    expect(firstClose.ok).toBe(false);
+    if (firstClose.ok) throw new Error("Close lost the retained descriptor");
+    aggregates.push(firstClose.error);
+
+    close.mockRestore();
+    const stagingClose = await cache.close();
+    expect(stagingClose.ok).toBe(false);
+    if (stagingClose.ok) throw new Error("Close lost the retained staging");
+    aggregates.push(stagingClose.error);
+    retainedPath = stagingClose.error.cleanupResources[0];
+    expect(retainedPath).toBeDefined();
+    if (retainedPath === undefined)
+      throw new Error("Missing failed staging cleanup resource");
+    expect(buildFailure.cleanupIncomplete).toBe(false);
+    for (const failure of aggregates)
+      expect(failure.cleanupIncomplete).toBe(true);
+
+    await chmod(retainedPath, 0o700);
+    expect(await cache.close()).toEqual({ ok: true, value: null });
+    expect(buildFailure.cleanupIncomplete).toBe(false);
+    expect(
+      aggregates.every(({ cleanupIncomplete }) => !cleanupIncomplete),
+    ).toBe(true);
+  } finally {
+    close.mockRestore();
+    if (stagingPath !== undefined)
+      await chmod(stagingPath, 0o700).catch(() => undefined);
+    if (retainedPath !== undefined)
+      await chmod(retainedPath, 0o700).catch(() => undefined);
+    await cache.close();
+  }
 });
 
 it("shares one Kuna run between concurrent requests for one export", async () => {
@@ -463,11 +944,18 @@ it("reports each build phase to every waiting request", async () => {
   });
 
   expect(result.ok).toBe(true);
-  expect(statuses).toEqual([
-    { phase: "inventory", inventoryFunctions: null },
-    { phase: "decompiling", inventoryFunctions: 3 },
-    { phase: "sealing", inventoryFunctions: 3 },
+  expect(
+    statuses.map(({ phase, inventory }) => [phase, inventory?.length ?? null]),
+  ).toEqual([
+    ["inventory", null],
+    ["decompiling", 3],
+    ["sealing", 3],
   ]);
+  // Waiters receive the export's own parsed inventory, and publishing keeps
+  // that one array rather than parsing a second copy.
+  expect(statuses.at(-1)?.inventory).toBe(
+    result.ok ? result.value.inventory : undefined,
+  );
 });
 
 it("sweeps retired entries but preserves staging with unresolved process ownership", async () => {
@@ -701,4 +1189,325 @@ it("removes its staging when publication itself fails", async () => {
   });
   expect(await entries(cacheRoot, "staging")).toEqual([]);
   expect(await entries(cacheRoot, "projects")).toEqual([]);
+});
+
+it.each(["missing", "corrupt"])(
+  "keeps a %s cache beneath the natively resolved selected root through publication, reads and cleanup",
+  async (state) => {
+    const root = await createTestTempDirectory("rea-kuna-native-cache-");
+    const intended = join(root, "intended");
+    await mkdir(join(intended, "nested"), { recursive: true });
+    await symlink(join(intended, "nested"), join(root, "alias"));
+    const selected = `${root}/alias/../cache`;
+    const { kuna, installation, cache, target } = await fixture(
+      "rea-kuna-cache-input-",
+      {},
+      {
+        environment: { REA_KUNA_CACHE_DIR: selected },
+      },
+    );
+    const input = await target("program");
+    const key = keyOf(installation, input);
+    const intendedEntry = join(intended, "cache", "projects", key);
+    const decoyEntry = join(root, "cache", "projects", key);
+    for (const entry of state === "corrupt"
+      ? [intendedEntry, decoyEntry]
+      : [decoyEntry]) {
+      await mkdir(entry, { recursive: true });
+      await writeFile(join(entry, "manifest.json"), "{}");
+    }
+    const reopened = newCache(installation);
+    try {
+      expect(await cache.lookup(key)).toBeUndefined();
+      await expect(
+        readFile(join(intendedEntry, "manifest.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(join(decoyEntry, "manifest.json"), "utf8")).toBe(
+        "{}",
+      );
+      const built = await cache.build({ installation, ...input });
+      if (!built.ok) throw built.error;
+      expect(built.value.directory).toBe(join(intendedEntry, "project"));
+      expect(await reopened.lookup(key)).toEqual(built.value);
+      expect(
+        await readFile(
+          join(built.value.directory, built.value.manifest.files.c.path),
+          "utf8",
+        ),
+      ).toContain("main");
+      for (const call of await fakeKunaCalls(kuna)) {
+        expect(await realpath(call.home)).toBe(join(intended, "cache", "home"));
+      }
+      expect(await readdir(join(intended, "cache", "staging"))).toEqual([]);
+      expect(await readFile(join(decoyEntry, "manifest.json"), "utf8")).toBe(
+        "{}",
+      );
+    } finally {
+      expect(await cache.close()).toEqual({ ok: true, value: null });
+      expect(await reopened.close()).toEqual({ ok: true, value: null });
+    }
+  },
+);
+
+it("invalidates a warm export when same-length content changes", async () => {
+  const { cache, installation, target } = await fixture(
+    "rea-kuna-warm-integrity-",
+  );
+  try {
+    const built = await cache.build({
+      installation,
+      ...(await target("program")),
+    });
+    if (!built.ok) throw built.error;
+    const file = join(built.value.directory, built.value.manifest.files.c.path);
+    const original = await readFile(file, "utf8");
+    await writeFile(file, original.replace("return 0", "return 9"));
+    expect(await cache.lookup(built.value.key)).toBeUndefined();
+    await expect(readFile(file)).rejects.toMatchObject({ code: "ENOENT" });
+  } finally {
+    expect(await cache.close()).toMatchObject({ ok: true });
+  }
+});
+
+it("refuses escaped manifest paths before reading export files and preserves the outside project", async () => {
+  const { installation, cacheRoot, cache, target } = await fixture(
+    "rea-kuna-escaped-manifest-",
+  );
+  const built = await cache.build({
+    installation,
+    ...(await target("program")),
+  });
+  if (!built.ok) throw built.error;
+  expect((await cache.close()).ok).toBe(true);
+  const outside = join(dirname(cacheRoot), "saved-project");
+  await rename(built.value.directory, outside);
+  await mkdir(built.value.directory);
+  const manifest = structuredClone(built.value.manifest);
+  for (const file of Object.values(manifest.files))
+    file.path = relative(built.value.directory, join(outside, file.path));
+  await writeFile(
+    join(dirname(built.value.directory), "manifest.json"),
+    JSON.stringify(manifest),
+  );
+  const hashes = vi.spyOn(stableFileHash, "observeStableFile");
+  const reopened = newCache(installation);
+  try {
+    expect(await reopened.lookup(built.value.key)).toBeUndefined();
+    expect(hashes).not.toHaveBeenCalled();
+    await expect(access(dirname(built.value.directory))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await readFile(join(outside, "program.c"), "utf8")).toContain(
+      "// Function: main",
+    );
+  } finally {
+    hashes.mockRestore();
+    expect((await reopened.close()).ok).toBe(true);
+  }
+});
+
+it.each(["h", "readme", "inventory"] as const)(
+  "refuses a manifest's mismatched %s role before hashing files",
+  async (role) => {
+    const { installation, cache, target } = await fixture(
+      "rea-kuna-role-manifest-",
+    );
+    const built = await cache.build({
+      installation,
+      ...(await target("program")),
+    });
+    if (!built.ok) throw built.error;
+    expect((await cache.close()).ok).toBe(true);
+    const manifest = structuredClone(built.value.manifest);
+    manifest.files[role].path =
+      role === "h" ? "different.h" : `saved-${manifest.files[role].path}`;
+    await writeFile(
+      join(dirname(built.value.directory), "manifest.json"),
+      JSON.stringify(manifest),
+    );
+    const hashes = vi.spyOn(stableFileHash, "observeStableFile");
+    const reopened = newCache(installation);
+    try {
+      expect(await reopened.lookup(built.value.key)).toBeUndefined();
+      expect(hashes).not.toHaveBeenCalled();
+    } finally {
+      hashes.mockRestore();
+      expect((await reopened.close()).ok).toBe(true);
+    }
+  },
+);
+
+it.each(["entry", "project", "manifest"] as const)(
+  "refuses a symlinked %s on cold and verified lookup without touching its target",
+  async (kind) => {
+    for (const verified of [false, true]) {
+      const { installation, cacheRoot, cache, target } = await fixture(
+        "rea-kuna-linked-entry-",
+      );
+      const built = await cache.build({
+        installation,
+        ...(await target("program")),
+      });
+      if (!built.ok) throw built.error;
+      expect((await cache.close()).ok).toBe(true);
+      const reopened = newCache(installation);
+      if (verified)
+        expect(await reopened.lookup(built.value.key)).toBeDefined();
+      const entry = dirname(built.value.directory);
+      const selected =
+        kind === "entry"
+          ? entry
+          : kind === "project"
+            ? built.value.directory
+            : join(entry, "manifest.json");
+      const outside = join(dirname(cacheRoot), `saved-${kind}`);
+      await rename(selected, outside);
+      await symlink(outside, selected);
+      const preserved =
+        kind === "entry"
+          ? join(outside, "project", "program.c")
+          : kind === "project"
+            ? join(outside, "program.c")
+            : outside;
+      const before = await readFile(preserved);
+      const hashes = vi.spyOn(stableFileHash, "observeStableFile");
+      try {
+        expect(await reopened.lookup(built.value.key)).toBeUndefined();
+        expect(hashes).not.toHaveBeenCalled();
+        expect((await readFile(preserved)).equals(before)).toBe(true);
+        await expect(access(entry)).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        hashes.mockRestore();
+        expect((await reopened.close()).ok).toBe(true);
+      }
+    }
+  },
+);
+
+it("keeps an empty symlinked projects parent outside its removal authority", async () => {
+  const { installation, cacheRoot, cache, target } = await fixture(
+    "rea-kuna-linked-projects-",
+  );
+  const built = await cache.build({
+    installation,
+    ...(await target("program")),
+  });
+  if (!built.ok) throw built.error;
+  expect((await cache.close()).ok).toBe(true);
+  const outside = join(dirname(cacheRoot), "empty-projects");
+  await mkdir(outside);
+  await rename(join(cacheRoot, "projects"), join(cacheRoot, "saved-projects"));
+  await symlink(outside, join(cacheRoot, "projects"));
+  const reopened = newCache(installation);
+  try {
+    await expect(reopened.lookup(built.value.key)).rejects.toMatchObject({
+      _tag: "ProviderAdapterError",
+      userMessage: expect.stringContaining("ownership is unknown"),
+    });
+    expect(await readdir(outside)).toEqual([]);
+    await access(
+      join(cacheRoot, "saved-projects", built.value.key, "manifest.json"),
+    );
+  } finally {
+    expect((await reopened.close()).ok).toBe(true);
+  }
+});
+
+it("preserves a legitimate POSIX backslash in the common export basename", async () => {
+  const { installation, cache, target } = await fixture(
+    "rea-kuna-native-basename-",
+  );
+  const built = await cache.build({
+    installation,
+    ...(await target("program\\name")),
+  });
+  if (!built.ok) throw built.error;
+  expect((await cache.close()).ok).toBe(true);
+  const reopened = newCache(installation);
+  try {
+    expect(await reopened.lookup(built.value.key)).toMatchObject({
+      manifest: {
+        files: {
+          c: { path: "program\\name.c" },
+          h: { path: "program\\name.h" },
+          asm: { path: "program\\name.asm" },
+        },
+      },
+    });
+  } finally {
+    expect((await reopened.close()).ok).toBe(true);
+  }
+});
+
+it.each(["invalid JSON", "changed producing inputs", "valid rewrite"] as const)(
+  "revalidates a warm cache after manifest %s",
+  async (change) => {
+    const { installation, cache, target } = await fixture(
+      "rea-kuna-warm-manifest-",
+    );
+    const built = await cache.build({
+      installation,
+      ...(await target("program")),
+    });
+    if (!built.ok) throw built.error;
+    expect(await cache.lookup(built.value.key)).toBeDefined();
+    const manifest = structuredClone(built.value.manifest);
+    if (change === "changed producing inputs")
+      manifest.inputs.target_sha256 = "f".repeat(64);
+    await writeFile(
+      join(dirname(built.value.directory), "manifest.json"),
+      change === "invalid JSON"
+        ? "{not JSON}"
+        : JSON.stringify(manifest, null, 3),
+    );
+    const hashes = vi.spyOn(stableFileHash, "observeStableFile");
+    try {
+      const found = await cache.lookup(built.value.key);
+      if (change === "valid rewrite") {
+        expect(found).toMatchObject({ key: built.value.key });
+        expect(hashes).toHaveBeenCalledTimes(5);
+      } else {
+        expect(found).toBeUndefined();
+        expect(hashes).not.toHaveBeenCalled();
+      }
+    } finally {
+      hashes.mockRestore();
+      expect((await cache.close()).ok).toBe(true);
+    }
+  },
+);
+
+it("separates equal target bytes whose native basenames change the export", async () => {
+  const { kuna, installation, cache, target } = await fixture(
+    "rea-kuna-basename-key-",
+  );
+  const first = await cache.build({
+    installation,
+    ...(await target("first", "same bytes")),
+  });
+  const secondInput = await target("second", "same bytes");
+  const second = await cache.build({ installation, ...secondInput });
+  if (!first.ok) throw first.error;
+  if (!second.ok) throw second.error;
+  expect(second.value.key).not.toBe(first.value.key);
+  expect(first.value.manifest.inputs.target_basename).toBe("first");
+  expect(second.value.manifest.inputs.target_basename).toBe("second");
+  expect(first.value.manifest.files.c.path).toBe("first.c");
+  expect(second.value.manifest.files.c.path).toBe("second.c");
+  expect(first.value.manifest.files.c.sha256).not.toBe(
+    second.value.manifest.files.c.sha256,
+  );
+  expect(
+    await readFile(join(second.value.directory, "second.c"), "utf8"),
+  ).toContain('#include "second.h"');
+  expect((await cache.close()).ok).toBe(true);
+  const reopened = newCache(installation);
+  try {
+    const reused = await reopened.build({ installation, ...secondInput });
+    if (!reused.ok) throw reused.error;
+    expect(reused.value.manifest).toEqual(second.value.manifest);
+    expect(await callsOf(kuna, "decompile-project")).toHaveLength(2);
+  } finally {
+    expect((await reopened.close()).ok).toBe(true);
+  }
 });
