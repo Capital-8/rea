@@ -68,10 +68,11 @@ describe("LLDB retained observations", () => {
       [event, attributed]
         .map((entry) => JSON.stringify({ kind: "event", event: entry }))
         .join("\n") + "\n";
-    expect(observation("cancelled", journal).events).toEqual([
-      event,
-      attributed,
-    ]);
+    const partial = observation("cancelled", journal);
+    expect(partial.events).toEqual([event, attributed]);
+    expect(partial.limitations).toContain(
+      "Source paths and lines are LLDB line-table attribution; REA did not read or verify the referenced source bytes.",
+    );
   });
 
   it.each([
