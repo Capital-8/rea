@@ -43,8 +43,7 @@ const validateAdvertisedFirmwareOutput = async (
     const schema = (await client.listTools()).tools.find(
       (tool) => tool.name === contract.name,
     )?.outputSchema;
-    if (schema === undefined)
-      throw new Error("Missing firmware output schema");
+    if (schema === undefined) throw new Error("Missing firmware output schema");
     const ajv = new Ajv2020({ strict: false, validateFormats: false });
     expect(ajv.validateSchema(schema as AnySchema)).toBe(true);
     const validate = ajv.compile(schema as AnySchema);
