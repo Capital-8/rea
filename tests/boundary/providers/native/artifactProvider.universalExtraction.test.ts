@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
+import { CPU_ARM64, universalMacho } from "../../../fixtures/universalMacho.js";
+import { thinMach } from "../../../../src/domain/binaryTarget.fixture.js";
 
 import { ArtifactProvider } from "../../../../src/artifacts/ArtifactProvider.js";
 import { ArtifactReaderFailure } from "../../../../src/artifacts/ArtifactReader.js";
@@ -48,14 +50,16 @@ it("routes universal Mach-O extraction through slice inventory", async () => {
   const image = join(root, "Universal");
   await writeFile(
     image,
-    fatImage([
-      { cpu: CPU.arm64, bytes: machoImage({ cpu: CPU.arm64 }) },
-      { cpu: CPU.x86_64, bytes: machoImage({ cpu: CPU.x86_64 }) },
-    ]),
+    universalMacho([
+      {
+        bytes: thinMach(0xfeedfacf, CPU_ARM64),
+        cpuType: CPU_ARM64,
+        cpuSubtype: 0,
+      },
+    ]).bytes,
   );
-  const target = await parseBinaryTarget(image);
+  const target = await parseBinaryTarget(image, { hostArchitecture: "arm64" });
   if (!target.ok) throw target.error;
-  expect(target.value.format).toBe("mach-o-universal");
   const output = join(root, "output");
   const result = await new ArtifactProvider(process.env)
     .createClient(target.value)

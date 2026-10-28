@@ -2,12 +2,9 @@ import { createHash } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect } from "vitest";
+import { artifactInspectionResultSchema } from "../../src/domain/artifactInspection.js";
 import {
-  artifactInspectionOutputSchema,
-  artifactInspectionResultSchema,
-} from "../../src/domain/artifactInspection.js";
-import {
-  artifactInventoryOutputSchema,
+  artifactInventoryResultSchema,
   artifactExtractionResultSchema,
 } from "../../src/domain/artifactGraph.js";
 import { analysisViewResultSchema } from "../../src/domain/analysisView/analysisView.js";
@@ -42,7 +39,7 @@ cliTest(
     const extracted = await call("extract_artifact", {});
     expect(extracted.isError).toBe(true);
     expect(JSON.stringify(parseMcpToolError(extracted))).toContain(
-      "Active artifact digest changed",
+      "Artifact format has no extraction reader: plist",
     );
     await call("close_binary", {});
   },
@@ -60,9 +57,7 @@ cliTest(
       );
       await writeFile(path, inesFixture());
       const first = await call("open_binary", { path });
-      expect(first.isError, JSON.stringify(first.structuredContent)).not.toBe(
-        true,
-      );
+      expect(first.isError, JSON.stringify(first)).not.toBe(true);
       await writeOrderedZip(path, ["payload.txt"]);
       const refreshed = await call("open_binary", { path });
       expect(
@@ -106,10 +101,10 @@ const inventoryFrom = (input: unknown) => {
   const substep = inspection.substeps[0];
   if (substep === undefined) throw new Error("Missing inventory substep");
   parseEvidence(substep.evidence);
-  const inventory = artifactInventoryOutputSchema.parse(
+  const inventory = artifactInventoryResultSchema.parse(
     substep.evidence.normalized_result,
   );
-  expect(inventory.coverage_status).toBe("complete");
+  expect(inventory.coverage.status).toBe("complete");
   expect(inventory.limitations).toContainEqual(
     expect.stringContaining("CPU bank mappings"),
   );
@@ -171,15 +166,14 @@ cliTest(
 
     const { call } = await connectLocalToolsMcp();
     const opened = await call("open_binary", { path });
-    if (opened.isError)
-      throw new Error(JSON.stringify(parseMcpToolError(opened)));
+    if (opened.isError) throw new Error(JSON.stringify(opened));
     const inspected = await call("inspect_artifact", {});
     expect(
       inspected.isError,
       JSON.stringify(inspected.structuredContent),
     ).not.toBe(true);
     expect(inventoryFrom(inspected.structuredContent)).toEqual(inventory);
-    const typed = artifactInspectionOutputSchema.parse(
+    const typed = artifactInspectionResultSchema.parse(
       parseEvidence(inspected.structuredContent).normalized_result,
     );
     expect(typed.substeps[0]?.evidence.normalized_result).toMatchObject({
@@ -193,14 +187,14 @@ cliTest(
       })),
     });
     expect(
-      artifactInspectionOutputSchema.safeParse(
+      artifactInspectionResultSchema.safeParse(
         withInventory({ ...inventory, ines: undefined }),
       ).success,
     ).toBe(false);
     const withoutInes = { ...inventory };
     delete withoutInes.ines;
     expect(
-      artifactInspectionOutputSchema.safeParse(withInventory(withoutInes))
+      artifactInspectionResultSchema.safeParse(withInventory(withoutInes))
         .success,
     ).toBe(true);
 
@@ -244,21 +238,20 @@ cliTest(
     );
     try {
       expect(extraction.artifacts).toHaveLength(expected.length);
-      expect(
-        Buffer.concat(
-          await Promise.all(
-            expected.map(([region]) =>
-              readFile(join(extraction.output_root, region)),
-            ),
+      const reconstructed = Buffer.concat(
+        await Promise.all(
+          expected.map(([region]) =>
+            readFile(join(extraction.output_root, region)),
           ),
         ),
-      ).toEqual(bytes);
+      );
+      expect(reconstructed.equals(bytes)).toBe(true);
     } finally {
       // The successful extraction transfers this exact output directory to the caller.
       await rm(extraction.output_root, { recursive: true, force: true });
     }
     await call("close_binary", {});
-    expect(await readFile(path)).toEqual(bytes);
+    expect((await readFile(path)).equals(bytes)).toBe(true);
   },
 );
 
@@ -270,8 +263,7 @@ cliTest(
     await writeFile(validPath, inesFixture({ chrUnits: 0 }));
     const { call } = await connectLocalToolsMcp();
     const opened = await call("open_binary", { path: validPath });
-    if (opened.isError)
-      throw new Error(JSON.stringify(parseMcpToolError(opened)));
+    if (opened.isError) throw new Error(JSON.stringify(opened));
     for (const [name, bytes, reason] of [
       ["truncated", inesFixture().subarray(0, 20), "truncated iNES payload"],
       [

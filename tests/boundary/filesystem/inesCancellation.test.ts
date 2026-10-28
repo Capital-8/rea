@@ -9,7 +9,7 @@ import { hashStableRootArtifactHandle } from "../../../src/artifacts/inventory/h
 import { inventoryArtifact } from "../../fixtures/artifactInventory.js";
 import { inesFixture } from "../../fixtures/ines.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
-import { RegularFileAdmissionFailure } from "../../../src/filesystem/RegularFile.js";
+import { RetainedRegularFileCleanupFailure } from "../../../src/application/RegularFileRead.js";
 
 // Complete the real I/O, then cancel while its caller is still awaiting it.
 const cancelAfterNextStat = (
@@ -74,12 +74,18 @@ it.each(["default", "caller-error", "failed-close"])(
     try {
       const result = parseBinaryTarget(path, { signal: controller.signal });
       if (reasonKind === "failed-close") {
-        const failure = await result.catch((cause: unknown) => cause);
-        expect(failure).toBeInstanceOf(RegularFileAdmissionFailure);
-        if (!(failure instanceof RegularFileAdmissionFailure)) throw failure;
-        expect(failure.cause).toBe(controller.signal.reason);
-        expect(failure.cleanupCause).toBe(cleanupFailure);
-        await failure.owner.close();
+        const failure = await result;
+        if (failure.ok) throw new Error("Expected a retained cleanup failure");
+        expect(failure.error.cleanupIncomplete).toBe(true);
+        expect(failure.error.cause).toBeInstanceOf(
+          RetainedRegularFileCleanupFailure,
+        );
+        const retained = failure.error
+          .cause as RetainedRegularFileCleanupFailure;
+        expect(retained.cleanupCause).toBe(cleanupFailure);
+        expect(retained.outcome).toMatchObject({ kind: "failed" });
+        await retained.cleanupLease.release();
+        expect(failure.error.cleanupIncomplete).toBe(false);
       } else {
         await expect(result).resolves.toMatchObject({
           ok: false,

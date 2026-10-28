@@ -25,7 +25,7 @@ import { OwnedFileHandle } from "../../../src/filesystem/OwnedFileHandle.js";
 import { ArtifactResourceScope } from "../../../src/artifacts/ArtifactResourceScope.js";
 import {
   extractArtifact,
-  materializeArtifactInventory as materializeInScope,
+  materializeArtifactInventoryInScope as materializeInScope,
 } from "../../../src/artifacts/extraction/ArtifactExtraction.js";
 
 const sha256 = (bytes: Buffer) =>
@@ -101,7 +101,7 @@ it("rejects region bytes that disagree with stable whole-file hashes", async () 
       message: "iNES reconstruction differs from the source",
     });
     expect(changed).toBe(true);
-    expect(await readFile(path)).toEqual(bytes);
+    expect((await readFile(path)).equals(bytes)).toBe(true);
   } finally {
     read.mockRestore();
   }
@@ -201,6 +201,7 @@ it.each([true, false])(
     try {
       const extraction = await extractArtifact({
         inputPath: path,
+        inputFormat: "ines",
         outputRoot,
         environment: process.env,
         integrityPolicy: "fail",
@@ -214,7 +215,7 @@ it.each([true, false])(
           ),
         ),
       );
-      expect(reconstructed).toEqual(bytes);
+      expect(reconstructed.equals(bytes)).toBe(true);
     } finally {
       await scope.close();
     }
@@ -484,6 +485,7 @@ it.each(["removed", "directory", "malformed"])(
       materializeArtifactInventory(
         {
           inputPath: path,
+          inputFormat: "ines",
           outputRoot,
           environment: process.env,
           integrityPolicy: "fail",
@@ -540,6 +542,7 @@ it.each([
         materializeArtifactInventory(
           {
             inputPath: path,
+            inputFormat: "ines",
             outputRoot: join(root, "output"),
             environment: process.env,
             integrityPolicy: "fail",
@@ -580,6 +583,7 @@ it("retains a failed close after rejecting changed extraction bytes", async () =
       materializeInScope(
         {
           inputPath: path,
+          inputFormat: "ines",
           outputRoot: join(root, "output"),
           environment: process.env,
           integrityPolicy: "fail",
@@ -732,7 +736,7 @@ it.each(["eof", "cancelled", "failed-and-cancelled"])(
         abortIfNeeded(controller.signal),
       );
       if (mode === "eof") {
-        expect(await result).toEqual(bytes);
+        expect((await result).equals(bytes)).toBe(true);
         expect(reads).toBe(3);
       } else {
         await expect(result).rejects.toMatchObject({ reason: "cancelled" });

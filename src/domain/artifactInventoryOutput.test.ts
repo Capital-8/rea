@@ -1,8 +1,5 @@
 import { expect, it } from "vitest";
-import {
-  artifactInventoryOutputSchema,
-  artifactInventoryResultSchema,
-} from "./artifactGraph.js";
+import { artifactInventoryResultSchema } from "./artifactGraph.js";
 import { jsonValueSchema } from "./jsonValue.js";
 
 const digest = "a".repeat(64);
@@ -51,24 +48,22 @@ const inventory = {
   provenance: [],
   integrity_contradictions: [],
   limitations: [],
-  coverage_status: "complete",
+  coverage: { scope: "container-entries", status: "complete" },
 };
 
 it("keeps absent container facts absent in JSON-safe inventory output", () => {
-  const output = artifactInventoryOutputSchema.parse(inventory);
+  const output = artifactInventoryResultSchema.parse(inventory);
   expect(Object.hasOwn(output, "ines")).toBe(false);
   expect(jsonValueSchema.safeParse(output).success).toBe(true);
   expect(
-    artifactInventoryOutputSchema.safeParse({ ...inventory, ines: undefined })
+    artifactInventoryResultSchema.safeParse({ ...inventory, ines: undefined })
       .success,
   ).toBe(false);
 });
 
 it("keeps historical coverage omission separate from current output requirements", () => {
-  const { coverage_status: _coverage, ...historical } = inventory;
-  const imported = artifactInventoryResultSchema.parse(historical);
-  expect(Object.hasOwn(imported, "coverage_status")).toBe(false);
-  expect(artifactInventoryOutputSchema.safeParse(historical).success).toBe(
+  const { coverage: _coverage, ...historical } = inventory;
+  expect(artifactInventoryResultSchema.safeParse(historical).success).toBe(
     false,
   );
 });

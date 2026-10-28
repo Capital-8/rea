@@ -2,29 +2,27 @@ import {
   AnalysisCancelledError,
   AnalysisTimeoutError,
 } from "../domain/analysisErrorCore.js";
-import { WEB_RUNTIME_LIMITS } from "../domain/webRuntime.js";
 
 export const PLAYWRIGHT_NETWORK_READ_TIMEOUT_MS = 5_000;
 
-// Cleanup drains bounded content reads before closing Chrome and removing its
-// profile. Cover those stages and retain the observed 30-second allowance for
-// slow persistent-context close on shared runners.
-export const PLAYWRIGHT_SCENARIO_CLEANUP_TIMEOUT_MS = Math.max(
-  30_000,
-  PLAYWRIGHT_NETWORK_READ_TIMEOUT_MS + WEB_RUNTIME_LIMITS.cleanupTimeoutMs,
-);
-
 const OPERATION = "capture_browser_scenario" as const;
+
+// Chrome shutdown can take several seconds; expiry bounds the response, not ownership.
+export const PLAYWRIGHT_CLEANUP_CONFIRMATION_TIMEOUT_MS = 30_000;
 
 export const withPlaywrightExecutionBoundary = <Value>(
   work: () => Promise<Value>,
   timeoutMs: number | undefined,
   signal?: AbortSignal,
+  timeoutError: () => AnalysisTimeoutError = () =>
+    new AnalysisTimeoutError(OPERATION, timeoutMs ?? 0),
 ): Promise<Value> => {
   if (timeoutMs !== undefined && timeoutMs <= 0)
-    return Promise.reject(new AnalysisTimeoutError(OPERATION, timeoutMs));
+    return Promise.reject(timeoutError());
   if (signal?.aborted === true)
-    return Promise.reject(new AnalysisCancelledError(OPERATION));
+    return Promise.reject(
+      new AnalysisCancelledError(OPERATION, { cause: signal.reason }),
+    );
 
   return new Promise<Value>((resolve, reject) => {
     let settled = false;
@@ -35,7 +33,7 @@ export const withPlaywrightExecutionBoundary = <Value>(
       if (deadline === undefined) return;
       const remaining = deadline - performance.now();
       if (remaining <= 0) {
-        fail(new AnalysisTimeoutError(OPERATION, timeoutMs ?? 0));
+        fail(timeoutError());
         return;
       }
       timer = setTimeout(scheduleTimeout, Math.min(remaining, 2_147_483_647));
@@ -58,14 +56,19 @@ export const withPlaywrightExecutionBoundary = <Value>(
       reject(error);
     };
     const onAbort = (): void => {
-      fail(new AnalysisCancelledError(OPERATION));
+      fail(new AnalysisCancelledError(OPERATION, { cause: signal?.reason }));
     };
     scheduleTimeout();
+    if (settled) return;
     signal?.addEventListener("abort", onAbort, { once: true });
     if (signal?.aborted === true) {
       onAbort();
       return;
     }
-    void work().then(succeed, fail);
+    try {
+      void work().then(succeed, fail);
+    } catch (cause: unknown) {
+      fail(cause);
+    }
   });
 };

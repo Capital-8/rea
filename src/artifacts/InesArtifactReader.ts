@@ -8,7 +8,7 @@ import {
 import type { ArtifactCommand } from "../domain/artifactGraph.js";
 import {
   RegularFileChangedError,
-  verifyRegularFileState,
+  assertStableRegularFileIdentity,
   type StableRegularFileDescriptor,
 } from "../filesystem/RegularFile.js";
 import { readFileHandleChunks } from "../filesystem/readFileHandleChunks.js";
@@ -65,7 +65,7 @@ export class InesArtifactReader implements ArtifactReader {
         executable: false,
         encrypted: false,
         byteOffset: region.offset,
-        declaredSha256: null,
+        declaredIntegrity: null,
         unpacked: false,
         limitations: [],
         adapterKey: region.path,
@@ -170,7 +170,12 @@ export class InesArtifactReader implements ArtifactReader {
     if (this.#closed)
       throw new ArtifactReaderFailure("unavailable", "iNES reader is closed");
     try {
-      await verifyRegularFileState(this.path, this.source);
+      await assertStableRegularFileIdentity(
+        this.source.handle,
+        this.path,
+        this.source.initial,
+        { symlinks: "reject", ...(signal === undefined ? {} : { signal }) },
+      );
     } catch (cause: unknown) {
       abortIfNeeded(signal);
       if (cause instanceof RegularFileChangedError)

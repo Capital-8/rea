@@ -7,12 +7,30 @@ import { z } from "zod";
 const mock = vi.hoisted(() => ({ spawn: vi.fn(), port: vi.fn() }));
 vi.mock("../../../dist/process/ProviderProcess.js", () => ({
   spawnOwnedProviderProcess: mock.spawn,
+  ProviderProcessSupervisor: class {
+    constructor(
+      readonly launch: {
+        process: ChildProcess;
+        cleanup: () => Promise<unknown>;
+      },
+    ) {}
+    snapshot() {
+      return { stderr: { text: "" } };
+    }
+    async stop() {
+      await this.launch.cleanup();
+      return { status: "complete" };
+    }
+  },
 }));
 vi.mock("../../../dist/process/ProcessOwnershipObservation.js", () => ({
   createSystemProcessOwnershipHost: () => ({ listProcesses: async () => [] }),
 }));
-vi.mock("../../../dist/browser/BrowserProcessStartup.js", () => ({
-  waitForBrowserDevtoolsPort: mock.port,
+vi.mock("../../../scripts/lib/verifier-source-loader.mjs", () => ({
+  importVerifierSource: async () => ({
+    BROWSER_DEVTOOLS_STARTUP_TIMEOUT_MS: 60_000,
+    waitForBrowserDevtoolsPort: mock.port,
+  }),
 }));
 afterEach(() => vi.restoreAllMocks());
 

@@ -5,12 +5,12 @@ import { createPackage } from "@electron/asar";
 import { expect, it, onTestFinished, vi } from "vitest";
 
 import { ArtifactProvider } from "../../../../src/artifacts/ArtifactProvider.js";
+import { parseBinaryTarget } from "../../../../src/application/BinaryTargetResolver.js";
 import { ArtifactReaderFailure } from "../../../../src/artifacts/ArtifactReader.js";
 import { AsarArtifactReader } from "../../../../src/artifacts/AsarArtifactReader.js";
 import { SafeOutputTree } from "../../../../src/artifacts/SafeOutputTree.js";
 import { ProviderCleanupError } from "../../../../src/domain/providerCleanupError.js";
 import { createTestTempDirectory } from "../../../fixtures/temporaryDirectory.js";
-import { artifactGraphRootSha256 } from "../../../fixtures/artifactGraphRootSha256.js";
 
 const deferred = () => {
   let resolve: () => void = () => {};
@@ -30,14 +30,11 @@ const createArchive = async () => {
   return { root, archive };
 };
 
-const createClient = async (path: string) =>
-  new ArtifactProvider(process.env).createClient({
-    path,
-    sourcePath: path,
-    sha256: await artifactGraphRootSha256(path),
-    kind: "archive",
-    format: "asar",
-  });
+const createClient = async (path: string) => {
+  const target = await parseBinaryTarget(path);
+  if (!target.ok) throw target.error;
+  return new ArtifactProvider(process.env).createClient(target.value);
+};
 
 it("retains a failed reader close, blocks new work, and retries the same reader", async () => {
   const { root, archive } = await createArchive();
@@ -98,6 +95,8 @@ it("retains a failed reader close, blocks new work, and retries the same reader"
   expect(await client.close()).toMatchObject({ ok: true });
   expect(closeOwners).toHaveLength(5);
   expect(closeOwners[4]).toBe(closeOwners[1]);
+  if (!extraction.ok) expect(extraction.error.cleanupIncomplete).toBe(false);
+  expect(incompleteClose.error.cleanupIncomplete).toBe(false);
   const closed = await client.execute("inventory_artifact", {});
   expect(closed).toMatchObject({
     ok: false,
@@ -168,50 +167,46 @@ it("retains a failed rollback owner and preserves the materialization failure", 
   await expect(access(output)).rejects.toThrow();
 });
 
-// Windows intentionally skips directory fchmod; this fault requires POSIX setup.
-it.skipIf(process.platform === "win32")(
-  "retains a tree whose POSIX setup failed after root identity was captured",
-  async () => {
-    const { root, archive } = await createArchive();
-    const output = join(root, "output");
-    const blocker = join(output, "unowned.txt");
-    const client = await createClient(archive);
-    const prototypeHandle = await open(join(root, "prototype-handle"), "w");
-    const handlePrototype = Object.getPrototypeOf(prototypeHandle) as Pick<
-      typeof prototypeHandle,
-      "chmod"
-    >;
-    await prototypeHandle.close();
-    await rm(join(root, "prototype-handle"));
-    onTestFinished(async () => {
-      vi.restoreAllMocks();
-      await rm(blocker, { force: true });
-      await client.close();
-    });
-    vi.spyOn(handlePrototype, "chmod").mockImplementationOnce(async function (
-      this: typeof prototypeHandle,
-    ) {
-      await writeFile(blocker, "keep until owner retry");
-      throw new Error("injected output setup failure");
-    });
+it("retains a tree whose setup failed after root identity was captured", async () => {
+  const { root, archive } = await createArchive();
+  const output = join(root, "output");
+  const blocker = join(output, "unowned.txt");
+  const client = await createClient(archive);
+  const prototypeHandle = await open(join(root, "prototype-handle"), "w");
+  const handlePrototype = Object.getPrototypeOf(prototypeHandle) as Pick<
+    typeof prototypeHandle,
+    "chmod"
+  >;
+  await prototypeHandle.close();
+  await rm(join(root, "prototype-handle"));
+  onTestFinished(async () => {
+    vi.restoreAllMocks();
+    await rm(blocker, { force: true });
+    await client.close();
+  });
+  vi.spyOn(handlePrototype, "chmod").mockImplementationOnce(async function (
+    this: typeof prototypeHandle,
+  ) {
+    await writeFile(blocker, "keep until owner retry");
+    throw new Error("injected output setup failure");
+  });
 
-    const extraction = await client.execute("extract_artifact", {
-      output_root: output,
-    });
-    expect(extraction).toMatchObject({
-      ok: false,
-      error: {
-        _tag: "ArtifactOperationError",
-        detail: expect.stringContaining("injected output setup failure"),
-        cleanup: { resources: [output] },
-      },
-    });
-    expect(await readFile(blocker, "utf8")).toBe("keep until owner retry");
-    await rm(blocker);
-    expect(await client.close()).toMatchObject({ ok: true });
-    await expect(access(output)).rejects.toThrow();
-  },
-);
+  const extraction = await client.execute("extract_artifact", {
+    output_root: output,
+  });
+  expect(extraction).toMatchObject({
+    ok: false,
+    error: {
+      _tag: "ArtifactOperationError",
+      detail: expect.stringContaining("injected output setup failure"),
+      cleanup: { resources: [output] },
+    },
+  });
+  expect(await readFile(blocker, "utf8")).toBe("keep until owner retry");
+  await rm(blocker);
+  expect(await client.close()).toMatchObject({ ok: true });
+  await expect(access(output)).rejects.toThrow();
+});
 
 it("waits for admitted extraction before close and rejects later work", async () => {
   const { root, archive } = await createArchive();
@@ -250,7 +245,13 @@ it("waits for admitted extraction before close and rejects later work", async ()
   const extraction = client.execute("extract_artifact", {
     output_root: output,
   });
-  await started.promise;
+  await Promise.race([
+    started.promise,
+    extraction.then((result) => {
+      if (!result.ok) throw result.error;
+      throw new Error("Extraction completed before reaching its write stage");
+    }),
+  ]);
   const closing = client.close().then((result) => {
     closeFinished = true;
     return result;
