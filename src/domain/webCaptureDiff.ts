@@ -1140,6 +1140,31 @@ const scriptsDimension = (
     );
   const beforeMayOmitDeclaration = declarationMayBeOmitted(before);
   const afterMayOmitDeclaration = declarationMayBeOmitted(after);
+  // Each unknown declaration can match one known declaration in the other
+  // complete inventory. Any remaining unmatched facts prove a difference.
+  const mapFactsExceed = (
+    observed: readonly Script[],
+    observedMayOmit: boolean,
+    complete: readonly Script[],
+    completeMayOmit: boolean,
+  ): boolean => {
+    const available = new Map<string | null, number>();
+    let unknown = 0;
+    for (const script of complete) {
+      const value = script.source_map_url;
+      if (value === null && completeMayOmit) unknown++;
+      else available.set(value, (available.get(value) ?? 0) + 1);
+    }
+    let unmatched = 0;
+    for (const script of observed) {
+      const value = script.source_map_url;
+      if (value === null && observedMayOmit) continue;
+      const remaining = available.get(value) ?? 0;
+      if (remaining === 0) unmatched++;
+      else available.set(value, remaining - 1);
+    }
+    return unmatched > unknown;
+  };
   const left = new Map<string, string>();
   const right = new Map<string, string>();
   let valuesComplete = true;
@@ -1161,6 +1186,24 @@ const scriptsDimension = (
       later.every(
         (script) => script.source_map_url !== null || !afterMayOmitDeclaration,
       );
+    const provenMapDifference =
+      !mapComparable &&
+      prior.length > 0 &&
+      later.length > 0 &&
+      ((afterComplete &&
+        mapFactsExceed(
+          prior,
+          beforeMayOmitDeclaration,
+          later,
+          afterMayOmitDeclaration,
+        )) ||
+        (beforeComplete &&
+          mapFactsExceed(
+            later,
+            afterMayOmitDeclaration,
+            prior,
+            beforeMayOmitDeclaration,
+          )));
     if (prior.length > 0 && later.length > 0 && !mapComparable)
       valuesComplete = false;
     if (
@@ -1188,15 +1231,28 @@ const scriptsDimension = (
     const priorSamples = project(prior);
     const laterSamples = project(later);
     if (
+      !provenMapDifference &&
       !(beforeComplete && afterComplete) &&
       !(beforeComplete && !samplesContained(laterSamples, priorSamples)) &&
       !(afterComplete && !samplesContained(priorSamples, laterSamples))
     )
       continue;
     if (prior.length > 0)
-      left.set(identity, digestCanonicalValue(priorSamples.sort()));
+      left.set(
+        identity,
+        digestCanonicalValue({
+          samples: priorSamples.sort(),
+          proof: provenMapDifference ? "before" : null,
+        }),
+      );
     if (later.length > 0)
-      right.set(identity, digestCanonicalValue(laterSamples.sort()));
+      right.set(
+        identity,
+        digestCanonicalValue({
+          samples: laterSamples.sort(),
+          proof: provenMapDifference ? "after" : null,
+        }),
+      );
   }
   return compareDimension(
     left,

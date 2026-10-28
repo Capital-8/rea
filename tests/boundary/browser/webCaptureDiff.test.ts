@@ -1014,6 +1014,33 @@ describe("web capture diff incomplete inventories", () => {
         status: "unknown",
         total_changes: 0,
       });
+    const repeated = structuredClone(excluded);
+    repeated.scripts.items.push(structuredClone(known.scripts.items[0]!));
+    const completeRepeated = structuredClone(different);
+    completeRepeated.scripts.items.push(
+      structuredClone(different.scripts.items[0]!),
+    );
+    for (const [left, right] of [
+      [repeated, completeRepeated],
+      [completeRepeated, repeated],
+    ] as const)
+      expect(compare(left, right)).toMatchObject({
+        status: "changed",
+        total_changes: 1,
+      });
+    const incompleteRepeated = structuredClone(repeated);
+    incompleteRepeated.completeness.truncated_sections.push("scripts");
+    expect(compare(incompleteRepeated, completeRepeated)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+    const possibleMatch = structuredClone(completeRepeated);
+    possibleMatch.scripts.items[1]!.source_map_url = null;
+    possibleMatch.completeness.policy_filtered_sections.push("source_maps");
+    expect(compare(repeated, possibleMatch)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
     for (const reason of [
       "unsupported_url",
       "invalid_protocol_value",
@@ -1049,7 +1076,9 @@ describe("web capture diff incomplete inventories", () => {
         total_changes: 1,
       });
   });
+});
 
+describe("web capture diff script inventory coverage", () => {
   it.each(["truncated_sections", "unavailable_sections"] as const)(
     "does not infer script additions or removals from %s",
     async (section) => {
