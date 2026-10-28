@@ -29,6 +29,10 @@ it("retains nested facts in standalone Markdown table cells and mixed arrays", a
   const rendered = text(parseFragment(renderer.render(markdown)));
   expect(rendered).toContain('{"path":"alpha.txt"}');
   expect(rendered).toContain('[{"path":"sub/beta.txt"}]');
+  const literal = "colon: :) ;-) x) #tag &#58;";
+  const document = renderCliDocument({ [literal]: literal }, "md", false);
+  const renderedLiteral = text(parseFragment(renderer.render(document)));
+  expect(renderedLiteral.split(literal)).toHaveLength(3);
   expect(rendered).toContain("caller|value");
   expect(rendered).not.toContain("[object Object]");
   const mixed = renderCliDocument(

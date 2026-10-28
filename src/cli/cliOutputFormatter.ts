@@ -250,6 +250,7 @@ const escapeInlineSyntax = (
 
 const escapeTableCell = (value: string): string =>
   value
+    .replace(/[\\|`*[\]~{}#]|_+/g, escapeInlineSyntax)
     // Encode renderer-extension introducers at the same boundary as HTML
     // characters. Generated entities must not themselves be re-escaped.
     .replace(/[&<>:]|;(?=-?[)(])/g, (character) => {
@@ -267,7 +268,6 @@ const escapeTableCell = (value: string): string =>
       }
     })
     .replace(/([xXB8]-)\)/g, "$1&#41;")
-    .replace(/[\\|`*[\]~{}]|_+/g, escapeInlineSyntax)
     .replace(/\r\n|\r|\n/g, "<br>");
 
 const encodeMarkdownWhitespace = (whitespace: string): string =>
@@ -276,7 +276,6 @@ const encodeMarkdownWhitespace = (whitespace: string): string =>
 /** Heading and paragraph facts are literal data, including block syntax. */
 const escapeMarkdownText = (value: string): string =>
   escapeTableCell(value)
-    .replace(/#/g, "\\#")
     .replace(/^(\s*)([-+=])/, "$1\\$2")
     .replace(/^(\s*\d{1,9})([.)])(?=\s)/, "$1\\$2")
     .replace(/^[ \t]+/, encodeMarkdownWhitespace)
