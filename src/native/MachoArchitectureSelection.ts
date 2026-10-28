@@ -52,12 +52,18 @@ export const machoKnownCodeSignSelector = (
   cpuSubtype: number,
 ): string | undefined => {
   const capabilities = (cpuSubtype >>> 24) & 0xff;
-  // Other capability variants may have distinct tool names; do not collapse them.
+  // arm64e pointer authentication and x86_64 LIB64 have known tool selectors.
+  // Other capability variants may have distinct names; do not collapse them.
   if (
     capabilities !== 0 &&
     !(
       cpuType === 0x0100000c &&
       machoCpuSubtypeBase(cpuSubtype) === 2 &&
+      capabilities === 0x80
+    ) &&
+    !(
+      cpuType === 0x01000007 &&
+      machoCpuSubtypeBase(cpuSubtype) === 3 &&
       capabilities === 0x80
     )
   )
