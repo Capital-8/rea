@@ -380,6 +380,168 @@ export const documentationSections = [
       },
     ],
   },
+  {
+    text: "Additional guides",
+    items: [
+      {
+        text: "Build RL environments with REA",
+        source: "agent-environments-quickstart.md",
+        route: "/agent-environments-quickstart",
+      },
+      {
+        text: "Agent environments from recorded captures",
+        source: "agent-environments.md",
+        route: "/agent-environments",
+      },
+      {
+        text: "APK signature schemes",
+        source: "apk-signature.md",
+        route: "/apk-signature",
+      },
+      {
+        text: "Apple IPS crash reports",
+        source: "apple-ips.md",
+        route: "/apple-ips",
+      },
+      {
+        text: "Static analysis in GitHub Actions",
+        source: "ci-analysis.md",
+        route: "/ci-analysis",
+      },
+      {
+        text: "Desktop installation directories",
+        source: "desktop-applications.md",
+        route: "/desktop-applications",
+      },
+      {
+        text: "Flattened devicetree inspection",
+        source: "devicetree.md",
+        route: "/devicetree",
+      },
+      {
+        text: "Electron fuse state",
+        source: "electron-fuses.md",
+        route: "/electron-fuses",
+      },
+      { text: "ELF note tables", source: "elf-notes.md", route: "/elf-notes" },
+      {
+        text: "Erlang BEAM files",
+        source: "erlang-beam.md",
+        route: "/erlang-beam",
+      },
+      { text: "ESP images", source: "esp-image.md", route: "/esp-image" },
+      {
+        text: "GameCube DOL analysis through Ghidra",
+        source: "ghidra-dol.md",
+        route: "/ghidra-dol",
+      },
+      {
+        text: "PowerPC ELF analysis through Ghidra",
+        source: "ghidra-ppc.md",
+        route: "/ghidra-ppc",
+      },
+      {
+        text: "Godot PCK archives",
+        source: "godot-pck.md",
+        route: "/godot-pck",
+      },
+      {
+        text: "Static CUDA and HIP code objects",
+        source: "gpu-code-objects.md",
+        route: "/gpu-code-objects",
+      },
+      {
+        text: "Intel HEX and S-record images",
+        source: "hex-records.md",
+        route: "/hex-records",
+      },
+      {
+        text: "IL2CPP metadata",
+        source: "il2cpp-metadata.md",
+        route: "/il2cpp-metadata",
+      },
+      {
+        text: "Static JavaScript route inventory",
+        source: "javascript-route-inventory.md",
+        route: "/javascript-route-inventory",
+      },
+      {
+        text: "Linux kernel modules",
+        source: "kernel-modules.md",
+        route: "/kernel-modules",
+      },
+      {
+        text: "Kuna provider",
+        source: "kuna-provider.md",
+        route: "/kuna-provider",
+      },
+      {
+        text: "Model file declarations",
+        source: "model-artifacts.md",
+        route: "/model-artifacts",
+      },
+      {
+        text: "Match native functions across builds",
+        source: "native-function-matching.md",
+        route: "/native-function-matching",
+      },
+      {
+        text: "Node.js single executable applications",
+        source: "node-sea.md",
+        route: "/node-sea",
+      },
+      {
+        text: "PE Authenticode certificate tables",
+        source: "pe-certificates.md",
+        route: "/pe-certificates",
+      },
+      {
+        text: "PE import and delay-load tables",
+        source: "pe-imports.md",
+        route: "/pe-imports",
+      },
+      {
+        text: "PE TLS callbacks and load configuration",
+        source: "pe-load-config.md",
+        route: "/pe-load-config",
+      },
+      {
+        text: "Python packaged applications",
+        source: "python-packaged-applications.md",
+        route: "/python-packaged-applications",
+      },
+      {
+        text: "CPython pyc inspection",
+        source: "python-pyc.md",
+        route: "/python-pyc",
+      },
+      {
+        text: "Reconstruction coverage",
+        source: "reconstruction-coverage.md",
+        route: "/reconstruction-coverage",
+      },
+      {
+        text: "Reverse-engineering tool integrations",
+        source: "reverse-engineering-tools.md",
+        route: "/reverse-engineering-tools",
+      },
+      {
+        text: "Rust binary dependency metadata",
+        source: "rust-binaries.md",
+        route: "/rust-binaries",
+      },
+      {
+        text: "U-Boot legacy uImage containers",
+        source: "uimage.md",
+        route: "/uimage",
+      },
+      {
+        text: "UnityFS AssetBundle archives",
+        source: "unityfs.md",
+        route: "/unityfs",
+      },
+    ],
+  },
 ];
 
 export const documentationRewrites = Object.fromEntries(

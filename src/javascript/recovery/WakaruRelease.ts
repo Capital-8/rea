@@ -1,3 +1,5 @@
+import { BOUNDED_PRODUCER_LIMITS } from "../../process/LinuxResourceLimits.js";
+
 /** Unchanged upstream source pin; executed bytes are identified separately. */
 export const WAKARU_RELEASE = {
   version: "1.14.0",
@@ -8,7 +10,7 @@ export const WAKARU_RELEASE = {
 /**
  * Releases the report parser accepts. Wakaru changes `--version`, `--json`
  * and `provenance.json` only by addition within a major version
- * (https://github.com/pionxzh/wakaru/blob/v1.14.0/docs/cli.md#machine-readable-output-compatibility);
+ * (https://github.com/pionxzh/wakaru/blob/v1.14.0/docs/getting-started/cli.md#machine-readable-output-compatibility);
  * 1.13.0 is the first release this adapter verified.
  */
 export const WAKARU_ACCEPTED_RANGE = "^1.13.0";
@@ -20,13 +22,22 @@ export const WAKARU_PROVIDER_IDENTITY = {
   version: WAKARU_RELEASE.version,
 } as const;
 
+/** Fixed Wakaru allowance. This release has no caller setting that raises it. */
+export const wakaruFixedLimitRecovery = (
+  allowance: string,
+): { readonly userMessage: string; readonly remediationAction: string } => ({
+  userMessage: `${allowance}. This release has no runtime override.`,
+  remediationAction: `${allowance}. This release has no runtime override. Raising max_heap_mb or analysis_timeout_ms does not raise it. Repeating the unchanged request fails the same way.`,
+});
+
 /** Per-operation resource bounds for the verified Linux adapter. */
 export const RECOVERY_LIMITS = {
   inputBytes: 64 * 1024 * 1024,
   outputBytes: 128 * 1024 * 1024,
   outputEntries: 10000,
   reportBytes: 8 * 1024 * 1024,
-  addressSpaceBytes: 1024 * 1024 * 1024,
+  addressSpaceBytes: BOUNDED_PRODUCER_LIMITS.address_space_bytes,
+  cpuSeconds: 120,
   timeoutMs: 120000,
 } as const;
 
