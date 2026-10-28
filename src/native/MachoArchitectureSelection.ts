@@ -46,6 +46,29 @@ export const machoSubtypeRank = (
   return rank < 0 ? policy.subtypes.length : rank;
 };
 
+/** Return a tool selector only for an explicitly supported CPU subtype. */
+export const machoKnownCodeSignSelector = (
+  cpuType: number,
+  cpuSubtype: number,
+): string | undefined => {
+  const capabilities = (cpuSubtype >>> 24) & 0xff;
+  // Other capability variants may have distinct tool names; do not collapse them.
+  if (
+    capabilities !== 0 &&
+    !(
+      cpuType === 0x0100000c &&
+      machoCpuSubtypeBase(cpuSubtype) === 2 &&
+      capabilities === 0x80
+    )
+  )
+    return undefined;
+  return Object.values(MACHO_ARCHITECTURE_POLICIES)
+    .find((policy) => policy.cpuType === cpuType)
+    ?.subtypes.find(
+      ({ subtype }) => subtype === machoCpuSubtypeBase(cpuSubtype),
+    )?.name;
+};
+
 /** Select a tool spelling using the same preference order as FAT selection. */
 export const selectMachoArchitectureName = (
   policy: MachoArchitecturePolicy,

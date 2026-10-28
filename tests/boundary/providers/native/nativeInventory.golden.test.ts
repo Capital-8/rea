@@ -138,7 +138,7 @@ it("reports unsigned slices when a universal Mach-O has mixed signatures", async
           exit: { code: 1, signal: null },
         }),
         expect.objectContaining({
-          command: expect.arrayContaining(["-a", "arm64"]),
+          command: expect.arrayContaining(["-a", signedArchitecture]),
           exit: { code: 0, signal: null },
         }),
       ]),
@@ -182,6 +182,105 @@ it("uses the admitted universal target when codesign describes only its selected
     ]),
   });
 });
+
+it("retains distinct same-family FAT slices for signature coverage", async () => {
+  const path = join(
+    await createTestTempDirectory("rea-native-same-family-"),
+    "fixture",
+  );
+  await writeFile(
+    path,
+    fatImage(
+      [CPU.arm64, CPU.arm64e].map((cpu) => ({
+        cpu,
+        bytes: machoImage({ cpu }),
+      })),
+    ),
+  );
+  const header = parseExecutableHeader(await readFile(path), "arm64");
+  if (!header.ok || header.value.format !== "mach-o-universal")
+    throw new Error("expected universal fixture");
+  const replay = signatureRunner({
+    signed: (await fixture("codesign.txt")).replace(
+      /^Format=.*$/mu,
+      "Format=Mach-O thin (arm64)",
+    ),
+    unsigned: await fixture("dyld-inventory/codesign-unsigned.txt"),
+    entitlements: await fixture("entitlements.xml"),
+    unsignedHeader: true,
+  });
+  const runner: NativeCommandRunner = {
+    async run(tool, args, options) {
+      const result = await replay.run(
+        tool,
+        args.map((value) => (value === "arm64e" ? "x86_64" : value)),
+        options,
+      );
+      return result.ok ? ok({ ...result.value, arguments: [...args] }) : result;
+    },
+  };
+  const client = new NativeMacOSProvider({}, runner, "darwin").createClient({
+    ...(await nativeMachoTargetForFile(path)),
+    ...header.value,
+  });
+  const execution = await client.execute("inspect_signature", {});
+  if (!execution.ok) throw execution.error;
+  expect(execution.value.result).toMatchObject({
+    limitations: expect.arrayContaining([
+      expect.stringContaining("Partial signature coverage"),
+      "Unsigned Mach-O slices: arm64e.",
+    ]),
+    provenance: expect.arrayContaining([
+      expect.objectContaining({
+        command: expect.arrayContaining(["-a", "arm64e"]),
+        exit: { code: 1, signal: null },
+      }),
+    ]),
+  });
+});
+
+it.each([42, 0x81000002])(
+  "reports unknown signature coverage for unmapped FAT subtype %i",
+  async (subtype) => {
+    const path = join(
+      await createTestTempDirectory("rea-native-unknown-subtype-"),
+      "fixture",
+    );
+    const unknown = { type: CPU.arm64.type, subtype };
+    await writeFile(
+      path,
+      fatImage(
+        [CPU.arm64, unknown].map((cpu) => ({
+          cpu,
+          bytes: machoImage({ cpu }),
+        })),
+      ),
+    );
+    const header = parseExecutableHeader(await readFile(path), "arm64");
+    if (!header.ok || header.value.format !== "mach-o-universal")
+      throw new Error("expected universal fixture");
+    const client = new NativeMacOSProvider(
+      {},
+      signatureRunner({
+        signed: await fixture("codesign.txt"),
+        unsigned: await fixture("dyld-inventory/codesign-unsigned.txt"),
+        entitlements: await fixture("entitlements.xml"),
+      }),
+      "darwin",
+    ).createClient({
+      ...(await nativeMachoTargetForFile(path)),
+      ...header.value,
+    });
+    const execution = await client.execute("inspect_signature", {});
+    if (!execution.ok) throw execution.error;
+    expect(execution.value.result).toMatchObject({
+      limitations: expect.arrayContaining([
+        expect.stringContaining("signature states are unknown"),
+        expect.stringContaining("Partial signature coverage"),
+      ]),
+    });
+  },
+);
 
 it("rejects nonzero supplemental codesign output that is not an unsigned observation", async () => {
   const signed = await fixture("codesign.txt");
@@ -1164,6 +1263,12 @@ it.each(["arm64", "x86_64"] as const)(
   "binds every signature facet to the requested %s slice when all slices are signed",
   async (architecture) => {
     const registered = await signatureTarget();
+    const header = parseExecutableHeader(
+      await readFile(registered.path),
+      architecture === "x86_64" ? "x64" : "arm64",
+    );
+    if (!header.ok || header.value.format !== "mach-o-universal")
+      throw new Error("expected universal fixture");
     const display = (await fixture("codesign.txt")).replace(
       /^Format=.*$/mu,
       "Format=Mach-O universal (x86_64 arm64)",
@@ -1185,7 +1290,7 @@ it.each(["arm64", "x86_64"] as const)(
       },
     };
     const result = await new NativeMacOSProvider({}, runner, "darwin")
-      .createClient({ ...registered, architecture })
+      .createClient({ ...registered, ...header.value })
       .execute("inspect_signature", {});
     if (!result.ok) throw result.error;
     expect(result.value.result).toMatchObject({

@@ -89,6 +89,7 @@ import {
 import { createPlistNumberProjection } from "../domain/apple/plistNumbers.js";
 import type { NativeUiObservationResult } from "../domain/native/nativeUiObservation.js";
 import { parseXmlPropertyList } from "../domain/propertyListKeys.js";
+import { machoKnownCodeSignSelector } from "./MachoArchitectureSelection.js";
 import {
   demangleSwiftSchema,
   inspectPlistSchema,
@@ -753,7 +754,38 @@ class NativeMacOSClient implements AnalysisClient {
           "No executable architecture is selected.",
         ),
       );
-    const selectedArchitecture = architecture === "x86" ? "i386" : architecture;
+    const target = this.target;
+    const selectedSlice =
+      target.format === "mach-o-universal"
+        ? target.universalSlices?.find(
+            (slice) => slice.offset === target.universalSlice.offset,
+          )
+        : undefined;
+    if (target.format === "mach-o-universal" && selectedSlice === undefined)
+      return err(
+        new AnalysisCapabilityUnavailableError(
+          IDENTITY.id,
+          "inspect_signature",
+          "The selected Mach-O slice identity is unavailable for codesign.",
+        ),
+      );
+    const selectedArchitecture =
+      selectedSlice === undefined
+        ? architecture === "x86"
+          ? "i386"
+          : architecture
+        : machoKnownCodeSignSelector(
+            selectedSlice.cpuType,
+            selectedSlice.cpuSubtype,
+          );
+    if (selectedArchitecture === undefined)
+      return err(
+        new AnalysisCapabilityUnavailableError(
+          IDENTITY.id,
+          "inspect_signature",
+          "The selected Mach-O slice has no known codesign architecture selector.",
+        ),
+      );
     // A thin Mach-O already identifies its only slice. Its admitted architecture
     // is a CPU family, which is not necessarily a codesign subtype selector
     // (for example arm64e). Only universal containers need a selector.
@@ -826,10 +858,17 @@ class NativeMacOSClient implements AnalysisClient {
       ...entitlementValue.limitations.map((note) => `Entitlements: ${note}`),
       "Inspected a digest-verified Mach-O byte snapshot; filesystem-bound signing context and trust validation are not examined.",
     ];
-    const architectures = codeSignArchitectures(parsed.format, this.target);
-    if (architectures.length > 1)
+    const { architectures, unknownSlices } = codeSignArchitectures(
+      parsed.format,
+      this.target,
+    );
+    if (architectures.length > 1 || unknownSlices)
       limitations.push(
         `Partial signature coverage: signature identity, hashes, designated requirement, entitlements and runtime state describe the requested ${selectedArchitecture} architecture; other slices' metadata is not returned.`,
+      );
+    if (unknownSlices)
+      limitations.push(
+        "Some Mach-O slice identities cannot be mapped to a known codesign selector; their signature states are unknown.",
       );
     if (
       !unsigned &&
@@ -1598,13 +1637,22 @@ const codeSignCaptureFailure = (
 const codeSignArchitectures = (
   format: string | null,
   target: BinaryTarget,
-): string[] => {
+): { architectures: string[]; unknownSlices: boolean } => {
   // An architecture-selected codesign display describes the selected slice,
   // not the admitted container. The target owns the container's slice list.
-  if (target.kind === "executable" && target.format === "mach-o-universal")
-    return target.availableArchitectures.map((architecture) =>
-      architecture === "x86" ? "i386" : architecture,
+  if (target.kind === "executable" && target.format === "mach-o-universal") {
+    if (target.universalSlices === undefined)
+      return { architectures: [], unknownSlices: true };
+    const names = target.universalSlices.map(({ cpuType, cpuSubtype }) =>
+      machoKnownCodeSignSelector(cpuType, cpuSubtype),
     );
+    const known = names.filter((name): name is string => name !== undefined);
+    return {
+      architectures: [...new Set(known)],
+      unknownSlices:
+        known.length !== names.length || new Set(known).size !== names.length,
+    };
+  }
   const universal = /^Mach-O universal \(([^)\r\n]+)\)$/u.exec(
     format ?? "",
   )?.[1];
@@ -1612,13 +1660,22 @@ const codeSignArchitectures = (
     const architectures = universal
       .split(/\s+/u)
       .filter((architecture) => /^[A-Za-z][A-Za-z0-9_.]*$/u.test(architecture));
-    if (architectures.length > 0) return [...new Set(architectures)];
+    if (architectures.length > 0)
+      return {
+        architectures: [...new Set(architectures)],
+        unknownSlices: false,
+      };
   }
-  if (format?.startsWith("Mach-O thin ") === true) return [];
-  if (target.kind !== "executable" || !isMachOFormat(target.format)) return [];
-  return target.availableArchitectures.map((architecture) =>
-    architecture === "x86" ? "i386" : architecture,
-  );
+  if (format?.startsWith("Mach-O thin ") === true)
+    return { architectures: [], unknownSlices: false };
+  if (target.kind !== "executable" || !isMachOFormat(target.format))
+    return { architectures: [], unknownSlices: false };
+  return {
+    architectures: target.availableArchitectures.map((architecture) =>
+      architecture === "x86" ? "i386" : architecture,
+    ),
+    unknownSlices: false,
+  };
 };
 
 const invocation = (
