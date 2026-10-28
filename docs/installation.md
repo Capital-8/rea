@@ -273,7 +273,7 @@ After reviewing an update plan, rerun that same prefixed setup command without
 `--dry-run` and approve its exact changes. Profile removal likewise needs the
 prefix on `claude mcp remove --scope user rea` and any `rea uninstall` command;
 keep the broader client scope of uninstall in mind. Restart the selected
-profile after changing its pinned registration.
+profile after changing its registration.
 
 `claude mcp remove` removes only the registration. To remove REA from this
 profile without running the broader uninstall flow, first back up the profile's
@@ -549,8 +549,8 @@ non-TTY, and JSON modes without applying configuration changes.
 ## Released package and main
 
 Repository main documents its current code and generated catalog. `@latest`
-selects the npm release, and persistent MCP registrations are pinned to the
-version that performed setup. Installing newer instructions does not update a
+selects the npm release, and managed MCP registrations bind the installation
+that performed setup. Installing newer instructions does not update a
 running server or its registration.
 
 The npm release checked on **2026-10-11** was **6.4.0**, published from
