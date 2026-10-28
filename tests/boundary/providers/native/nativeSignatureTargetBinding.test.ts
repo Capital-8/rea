@@ -517,8 +517,20 @@ it.skipIf(process.platform !== "darwin")(
     if (!result.ok) throw result.error;
     const parsed = inspectSignatureSchema.parse(result.value.result);
     expect(parsed).toMatchObject({ signed: false });
-    const selectedArchitecture =
-      target.architecture === "x86" ? "i386" : target.architecture;
+    const { stdout: archOutput } = await runFile("/usr/bin/lipo", [
+      "-archs",
+      path,
+    ]);
+    const names = archOutput.trim().split(/\s+/u);
+    const toolName = (architecture: string) => {
+      const family = architecture === "x86" ? "i386" : architecture;
+      const name =
+        names.find((candidate) => candidate === family) ??
+        names.find((candidate) => candidate.startsWith(family));
+      if (name === undefined) throw new Error(`Missing ${family} slice`);
+      return name;
+    };
+    const selectedArchitecture = toolName(target.architecture);
     expect(
       parsed.provenance.map(
         ({ command }) => command[command.indexOf("-a") + 1],
@@ -528,9 +540,7 @@ it.skipIf(process.platform !== "darwin")(
       selectedArchitecture,
       selectedArchitecture,
       ...(target.availableArchitectures.length > 1
-        ? target.availableArchitectures.map((architecture) =>
-            architecture === "x86" ? "i386" : architecture,
-          )
+        ? target.availableArchitectures.map(toolName)
         : []),
     ]);
     expect(parsed.provenance.every(({ exit }) => exit.code === 1)).toBe(true);
