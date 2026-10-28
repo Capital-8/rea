@@ -1,4 +1,4 @@
-import { npxRegistrationCommand } from "../../src/application/ClientRegistrationIdentity.js";
+import { currentClientRegistrationCommand } from "../../src/application/ClientRegistrationIdentity.js";
 
 export const codexToolPolicy = {
   default_tools_approval_mode: "prompt",
@@ -22,7 +22,7 @@ export const codexToolPolicy = {
 export const codexToolPolicySource = (
   layout: "tables" | "inline table",
 ): string => {
-  const [command, ...args] = npxRegistrationCommand();
+  const [command, ...args] = currentClientRegistrationCommand();
   return layout === "tables"
     ? [
         "# retained root comment",
