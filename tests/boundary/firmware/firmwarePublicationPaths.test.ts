@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
+import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import type { AnySchema } from "ajv";
+import { toolContract } from "../../../src/contracts/toolContracts.js";
+import { toolOutputSchemaWithMetadata } from "../../../src/contracts/toolSchemaMetadata.js";
+import { createEvidence } from "../../../src/domain/evidence.js";
+import { RequestTrackingMcpServer } from "../../../src/server/RequestTrackingMcpServer.js";
 import { FirmwareProvider } from "../../../src/firmware/FirmwareProvider.js";
 import { FirmwareAnalysisService } from "../../../src/application/firmware/FirmwareAnalysisService.js";
 import {
@@ -13,6 +20,50 @@ import { normalizeUnblobReport } from "../../../src/firmware/FirmwareReports.js"
 import { startFirmwareDeadline } from "../../../src/firmware/FirmwareDeadline.js";
 import { SafeOutputTree } from "../../../src/artifacts/SafeOutputTree.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+
+const validateAdvertisedFirmwareOutput = async (
+  result: Awaited<ReturnType<typeof publishFirmwareExtraction>>,
+): Promise<void> => {
+  const contract = toolContract("extract_firmware");
+  const server = new RequestTrackingMcpServer({
+    name: "schema",
+    version: "1",
+  });
+  const client = new Client({ name: "schema-client", version: "1" });
+  server.registerTool(
+    contract.name,
+    { outputSchema: toolOutputSchemaWithMetadata(contract) },
+    () => ({ content: [] }),
+  );
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(serverTransport);
+    await client.connect(clientTransport);
+    const schema = (await client.listTools()).tools.find(
+      (tool) => tool.name === contract.name,
+    )?.outputSchema;
+    if (schema === undefined)
+      throw new Error("Missing firmware output schema");
+    const ajv = new Ajv2020({ strict: false, validateFormats: false });
+    expect(ajv.validateSchema(schema as AnySchema)).toBe(true);
+    const validate = ajv.compile(schema as AnySchema);
+    const evidence = createEvidence(
+      undefined,
+      { id: "fixture", name: "fixture", version: null },
+      {
+        operation: "extract_firmware",
+        parameters: {},
+        result,
+        confidence: "observed",
+      },
+    );
+    expect(validate(evidence), JSON.stringify(validate.errors)).toBe(true);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+};
 
 it.each(["existing", "missing-parent", "relative"] as const)(
   "refuses %s destinations before selecting or launching a firmware engine",
@@ -176,6 +227,7 @@ it("publishes the writer's normalized path while retaining source spelling and u
       await expect(access(join(output, "raw-link"))).rejects.toMatchObject({
         code: "ENOENT",
       });
+      await validateAdvertisedFirmwareOutput(result);
     }
     expect(result).toMatchObject({
       coverage: "partial",
