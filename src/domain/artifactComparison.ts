@@ -7,7 +7,6 @@ import type {
   ArtifactOccurrence,
 } from "./artifactGraph.js";
 import { AnalysisInputError } from "./analysisErrorCore.js";
-import { evidenceSchema } from "./evidence.js";
 import {
   ArtifactInventoryCarrierError,
   hasCompleteInventoryCoverage,
@@ -15,6 +14,7 @@ import {
   type InventorySet,
 } from "./artifactInventoryEvidence.js";
 import {
+  espImageSegmentDeclaration,
   nodeSeaEntryDeclaration,
   pyInstallerEntryDeclaration,
 } from "./artifactFormatMetadata.js";
@@ -49,12 +49,6 @@ const comparisonDimensionSchema = z.enum([
   "availability",
   "integrity",
 ]);
-/** Strict Evidence-backed input for deterministic artifact comparison. */
-export const artifactComparisonInputSchema = z.strictObject({
-  left: evidenceSchema,
-  right: evidenceSchema,
-});
-
 /** One path-classified artifact change with citations to both observations. */
 const artifactChangeSchema = z.object({
   classification: changeKindSchema,
@@ -414,8 +408,7 @@ const classifyPath = (input: ClassifyPathInput): ArtifactChange | null => {
   if (declaration.handled) return declaration.change;
   const availability = classifyAvailability(input, base);
   if (availability !== null)
-    return input.metadata.asarPacking === "changed" ||
-      input.metadata.nodeSea === "changed"
+    return declarationChanged(input.metadata)
       ? {
           ...base,
           classification: "changed",
@@ -447,8 +440,15 @@ type MetadataComparison = "unchanged" | "changed" | "unknown";
 interface OccurrenceMetadata {
   readonly asarPacking: MetadataComparison;
   readonly nodeSea: MetadataComparison;
+  readonly espImageSegment: MetadataComparison;
   readonly pyInstaller: MetadataComparison;
 }
+
+/** A declaration that differs even when content is unavailable. */
+const declarationChanged = (metadata: OccurrenceMetadata): boolean =>
+  metadata.asarPacking === "changed" ||
+  metadata.nodeSea === "changed" ||
+  metadata.espImageSegment === "changed";
 
 const compareOptionalMetadata = <T>(
   left: T | undefined,
@@ -480,6 +480,15 @@ const occurrenceMetadata = (input: OccurrencePair): OccurrenceMetadata => {
         ? right.format_metadata
         : undefined,
       nodeSeaEntryDeclaration,
+    ),
+    espImageSegment: compareOptionalMetadata(
+      left?.format_metadata?.kind === "esp-image-segment"
+        ? left.format_metadata
+        : undefined,
+      right?.format_metadata?.kind === "esp-image-segment"
+        ? right.format_metadata
+        : undefined,
+      espImageSegmentDeclaration,
     ),
     pyInstaller: compareOptionalMetadata(
       isPyInstallerEntry(left) ? left.format_metadata : undefined,
@@ -590,8 +599,7 @@ const metadataChanged = (
   left: ArtifactNode,
   right: ArtifactNode,
 ): boolean =>
-  input.metadata.asarPacking === "changed" ||
-  input.metadata.nodeSea === "changed" ||
+  declarationChanged(input.metadata) ||
   left.media_type !== right.media_type ||
   left.architecture !== right.architecture ||
   left.content_state !== right.content_state ||

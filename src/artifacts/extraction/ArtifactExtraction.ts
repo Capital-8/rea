@@ -590,6 +590,7 @@ const requireExtractableFormat = async (
     format !== "uimage" &&
     format !== "intel-hex" &&
     format !== "srec" &&
+    format !== "esp-image" &&
     format !== "mach-o-universal" &&
     !isZipPackageFormat(format)
   ) {
@@ -647,7 +648,10 @@ const createReader = (
       ? undefined
       : createArtifactReader(path, containerFormat, {
           environment: input.environment,
-          unreadableDirectories: "fail",
+          // Inventory already records inaccessible descendants as omissions.
+          // Keep that traversal policy here; the selected-path check below
+          // still refuses any inventoried file that cannot be materialized.
+          unreadableDirectories: "omit",
           selectedPath: absoluteCallerPath(
             input.selectedPath ?? input.inputPath,
           ),
