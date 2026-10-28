@@ -5,7 +5,7 @@ import { expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { AnySchema } from "ajv";
-import { toolContract } from "../../../src/contracts/toolContracts.js";
+import { FIRMWARE_TOOL_CONTRACTS } from "../../../src/contracts/firmware/firmwareToolContracts.js";
 import { toolOutputSchemaWithMetadata } from "../../../src/contracts/toolSchemaMetadata.js";
 import { createEvidence } from "../../../src/domain/evidence.js";
 import { RequestTrackingMcpServer } from "../../../src/server/RequestTrackingMcpServer.js";
@@ -24,7 +24,11 @@ import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 const validateAdvertisedFirmwareOutput = async (
   result: Awaited<ReturnType<typeof publishFirmwareExtraction>>,
 ): Promise<void> => {
-  const contract = toolContract("extract_firmware");
+  const contract = FIRMWARE_TOOL_CONTRACTS.find(
+    (item) => item.name === "extract_firmware",
+  );
+  if (contract === undefined)
+    throw new Error("Missing extract_firmware contract");
   const server = new RequestTrackingMcpServer({
     name: "schema",
     version: "1",
