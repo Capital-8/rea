@@ -268,6 +268,7 @@ export const analysisErrorCategory = (
   if (
     error instanceof EvidenceFileError &&
     (error.reason === "missing" ||
+      error.reason === "symlink-traversal" ||
       error.reason === "not-file" ||
       error.reason === "wrong-kind" ||
       error.reason === "exists")
@@ -579,6 +580,8 @@ const evidenceFileMessage = ({
       : systemCode === undefined
         ? "A host filesystem resource limit prevented Evidence publication. Check the file-size allowance, filesystem space and quota before retrying."
         : "The filesystem lacks space or quota for Evidence publication. Free space or increase quota and retry.";
+  if (reason === "symlink-traversal")
+    return "The selected path cannot be resolved because its symbolic-link chain loops or exceeds the host traversal limit. Repair the chain or select another path.";
   if (reason === "missing")
     return operation === "read"
       ? "Evidence file does not exist at the selected path. Check the path and try again."

@@ -72,6 +72,7 @@ export class EvidenceFileError extends AnalysisError {
       | "missing"
       | "path-limit"
       | "storage-limit"
+      | "symlink-traversal"
       | "io",
     options?: AnalysisErrorOptions & {
       readonly path?: string;
