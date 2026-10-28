@@ -47,7 +47,12 @@ export interface JavaScriptSemanticScope {
   readonly scopeId: string;
   readonly parentScopeId: string | null;
   readonly kind:
-    "program" | "function" | "block" | "static-block" | "class" | "catch";
+    | "program"
+    | "function"
+    | "block"
+    | "static-block"
+    | "class"
+    | "catch";
   readonly location: JavaScriptSourceRange;
   readonly bindingsComplete: boolean;
   readonly bindingIds: readonly string[];
@@ -177,7 +182,11 @@ export interface JavaScriptSemanticClosureCapture {
 export interface JavaScriptSemanticPromiseOperation {
   readonly promiseId: string;
   readonly kind:
-    "constructor" | "static" | "chain" | "aggregate" | "awaited-expression";
+    | "constructor"
+    | "static"
+    | "chain"
+    | "aggregate"
+    | "awaited-expression";
   readonly method:
     | "new"
     | "resolve"
@@ -320,7 +329,13 @@ export interface JavaScriptSemanticRequestOperation {
   readonly requestId: string;
   readonly kind: "request" | "response-consumer";
   readonly method:
-    "fetch" | "WebSocket" | "request" | "get" | "json" | "text" | "arrayBuffer";
+    | "fetch"
+    | "WebSocket"
+    | "request"
+    | "get"
+    | "json"
+    | "text"
+    | "arrayBuffer";
   readonly location: JavaScriptSourceRange;
   readonly ownerCallableId: string | null;
   readonly resultBindingId: string | null;
