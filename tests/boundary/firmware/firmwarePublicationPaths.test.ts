@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { FirmwareProvider } from "../../../src/firmware/FirmwareProvider.js";
 import { FirmwareAnalysisService } from "../../../src/application/firmware/FirmwareAnalysisService.js";
-import { FirmwareFileAccess } from "../../../src/firmware/FirmwareFiles.js";
+import {
+  FirmwareFileAccess,
+  inventoryFirmwareOutput,
+} from "../../../src/firmware/FirmwareFiles.js";
 import { publishFirmwareExtraction } from "../../../src/firmware/FirmwarePublication.js";
 import { normalizeUnblobReport } from "../../../src/firmware/FirmwareReports.js";
 import { startFirmwareDeadline } from "../../../src/firmware/FirmwareDeadline.js";
@@ -70,6 +73,14 @@ it("publishes the writer's normalized path while retaining source spelling and u
   const bytes = Buffer.from("child");
   const path = join(staging, name);
   await writeFile(path, bytes);
+  if (process.platform !== "win32") {
+    await symlink(
+      Buffer.from([0x73, 0x61, 0x6d, 0x70, 0x6c, 0x65, 0xff]),
+      join(staging, "raw-link"),
+    );
+    await symlink("sample\ufffd", join(staging, "unicode-link"));
+    await symlink("sample", join(staging, "control-link"));
+  }
   const sha256 = createHash("sha256").update(bytes).digest("hex");
   const inputPath = join(root, "input");
   const inputHash = "a".repeat(64);
@@ -111,15 +122,12 @@ it("publishes the writer's normalized path while retaining source spelling and u
       deadline: startFirmwareDeadline("publication", 120_000),
       analysisTimeoutMs: 120_000,
       outputDirectory: output,
-      entries: [
-        {
-          path,
-          relativePath: name,
-          size: bytes.length,
-          kind: "file",
-          linkTarget: null,
-        },
-      ],
+      entries: await inventoryFirmwareOutput(
+        staging,
+        1024,
+        10,
+        "extract_firmware",
+      ),
       normalized,
       selection: { offset: 7, length: 1, sha256: inputHash },
       maxDepth: 3,
@@ -144,18 +152,43 @@ it("publishes the writer's normalized path while retaining source spelling and u
     const published = result.files[0];
     if (published === undefined) throw new Error("Expected published child");
     expect(Buffer.compare(await readFile(published.path), bytes)).toBe(0);
+    if (process.platform !== "win32") {
+      expect(result.unpublished_entries).toEqual([
+        {
+          relative_path: "control-link",
+          kind: "symlink",
+          link_target: "sample",
+          link_target_hex: "73616d706c65",
+        },
+        {
+          relative_path: "raw-link",
+          kind: "symlink",
+          link_target: null,
+          link_target_hex: "73616d706c65ff",
+        },
+        {
+          relative_path: "unicode-link",
+          kind: "symlink",
+          link_target: "sample\ufffd",
+          link_target_hex: "73616d706c65efbfbd",
+        },
+      ]);
+      await expect(access(join(output, "raw-link"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    }
     expect(result).toMatchObject({
       coverage: "partial",
-      extraction_gaps: [
-        {
+      extraction_gaps: expect.arrayContaining([
+        expect.objectContaining({
           kind: "unclassified-range",
           input_path: "$input",
           provider_id: null,
           handler: null,
           range: { offset: 0, length: 1 },
           root_file_range: { offset: 7, length: 1 },
-        },
-      ],
+        }),
+      ]),
     });
     expect(retainCleanup).not.toHaveBeenCalled();
   } finally {
