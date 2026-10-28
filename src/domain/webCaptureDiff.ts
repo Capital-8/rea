@@ -425,7 +425,9 @@ const redirectNetworkIdentity = (identity: string, index: number): string =>
 const networkInventoryComplete = (
   inspection: WebPageInspection,
   sections: readonly (
-    "network_requests" | "websocket_connections" | "websocket_frames"
+    | "network_requests"
+    | "websocket_connections"
+    | "websocket_frames"
   )[],
 ): boolean =>
   sectionsComplete(inspection, sections) &&
