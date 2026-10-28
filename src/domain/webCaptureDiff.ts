@@ -425,9 +425,7 @@ const redirectNetworkIdentity = (identity: string, index: number): string =>
 const networkInventoryComplete = (
   inspection: WebPageInspection,
   sections: readonly (
-    | "network_requests"
-    | "websocket_connections"
-    | "websocket_frames"
+    "network_requests" | "websocket_connections" | "websocket_frames"
   )[],
 ): boolean =>
   sectionsComplete(inspection, sections) &&
@@ -1121,6 +1119,25 @@ const scriptsDimension = (
   const afterComplete =
     sectionsComplete(after, ["scripts"]) &&
     after.completeness.dropped_events.scripts === 0;
+  // A null declaration may represent an omitted URL. The capture ledger is
+  // section-wide, so it cannot identify which null script was affected.
+  // Unavailable map bodies alone do not erase an observed declaration.
+  const declarationMayBeOmitted = (inspection: WebPageInspection) =>
+    inspection.completeness.policy_filtered_sections.includes("source_maps") ||
+    inspection.completeness.truncated_sections.includes("source_maps") ||
+    inspection.completeness.excluded.some(
+      (item) =>
+        item.section === "source_maps" &&
+        item.count !== 0 &&
+        [
+          "disallowed_origin",
+          "unsupported_url",
+          "resource_budget_exhausted",
+          "invalid_protocol_value",
+        ].includes(item.reason),
+    );
+  const beforeMayOmitDeclaration = declarationMayBeOmitted(before);
+  const afterMayOmitDeclaration = declarationMayBeOmitted(after);
   const left = new Map<string, string>();
   const right = new Map<string, string>();
   let valuesComplete = true;
@@ -1135,6 +1152,15 @@ const scriptsDimension = (
       prior.length > 0 &&
       later.length > 0 &&
       all.every((script) => script.source.included);
+    const mapComparable =
+      prior.every(
+        (script) => script.source_map_url !== null || !beforeMayOmitDeclaration,
+      ) &&
+      later.every(
+        (script) => script.source_map_url !== null || !afterMayOmitDeclaration,
+      );
+    if (prior.length > 0 && later.length > 0 && !mapComparable)
+      valuesComplete = false;
     if (
       prior.length > 0 &&
       later.length > 0 &&
@@ -1150,7 +1176,7 @@ const scriptsDimension = (
       items.map((script) =>
         digestCanonicalValue({
           url: script.url,
-          source_map_url: script.source_map_url,
+          ...(mapComparable ? { source_map_url: script.source_map_url } : {}),
           ...Object.fromEntries(fields.map((field) => [field, script[field]])),
           ...(sourceComparable && script.source.included
             ? { source_sha256: script.source.artifact.sha256 }
@@ -1174,7 +1200,7 @@ const scriptsDimension = (
     left,
     right,
     beforeComplete && afterComplete && valuesComplete,
-    "Script inventory or corresponding source/metadata evidence was incomplete in at least one observation.",
+    "Script inventory, source-map declarations, or corresponding source/metadata evidence was incomplete in at least one observation.",
     true, // Selected map entries already carry their directional absence proof.
   );
 };

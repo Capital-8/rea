@@ -956,6 +956,100 @@ describe("web capture redirect comparison", () => {
 });
 
 describe("web capture diff incomplete inventories", () => {
+  it("compares observed script facts without treating excluded map declarations as absent", async () => {
+    const browser = await startFakeCdpBrowser();
+    browsers.push(browser);
+    const captured = await new CdpBrowserProvider().inspectPage(
+      inspectWebPageInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 0,
+      }),
+    );
+    if (!captured.ok) throw captured.error;
+    const known = structuredClone(captured.value);
+    markSectionsComplete(known, ["scripts", "source_maps"]);
+    known.completeness.excluded = known.completeness.excluded.filter(
+      (item) => item.section !== "source_maps",
+    );
+    const script = known.scripts.items[0];
+    if (script === undefined) throw new Error("Missing captured script");
+    script.source_map_url = "https://cdn.example.test/app.js.map";
+    script.cdp_hash = "a".repeat(64);
+    script.length = 10;
+    script.is_module = false;
+    script.language = "JavaScript";
+    const excluded = structuredClone(known);
+    excluded.scripts.items[0]!.source_map_url = null;
+    excluded.completeness.policy_filtered_sections.push("source_maps");
+    excluded.completeness.excluded.push({
+      section: "source_maps",
+      reason: "disallowed_origin",
+      count: 1,
+    });
+    const absent = structuredClone(known);
+    absent.scripts.items[0]!.source_map_url = null;
+    const changed = structuredClone(excluded);
+    changed.scripts.items[0]!.cdp_hash = "b".repeat(64);
+    const different = structuredClone(known);
+    different.scripts.items[0]!.source_map_url =
+      "https://cdn.example.test/other.map";
+    const unavailableBody = structuredClone(known);
+    unavailableBody.completeness.unavailable_sections.push("source_maps");
+    const compare = (before: typeof known, after: typeof known) =>
+      compareWebCaptures(
+        compareWebCapturesInputSchema.parse({
+          before: { inspection: before },
+          after: { inspection: after },
+        }),
+      ).dimensions.scripts;
+    for (const [left, right] of [
+      [known, excluded],
+      [excluded, known],
+      [excluded, excluded],
+      [absent, excluded],
+    ] as const)
+      expect(compare(left, right)).toMatchObject({
+        status: "unknown",
+        total_changes: 0,
+      });
+    for (const reason of [
+      "unsupported_url",
+      "invalid_protocol_value",
+      "resource_budget_exhausted",
+    ] as const) {
+      const omission = structuredClone(absent);
+      omission.completeness.excluded.push({
+        section: "source_maps",
+        reason,
+        count: 1,
+      });
+      expect(compare(known, omission)).toMatchObject({
+        status: "unknown",
+        total_changes: 0,
+      });
+    }
+    for (const [left, right] of [
+      [known, known],
+      [absent, absent],
+      [known, unavailableBody],
+    ] as const)
+      expect(compare(left, right)).toMatchObject({
+        status: "unchanged",
+        total_changes: 0,
+      });
+    for (const [left, right] of [
+      [known, different],
+      [absent, known],
+      [excluded, changed],
+    ] as const)
+      expect(compare(left, right)).toMatchObject({
+        status: "changed",
+        total_changes: 1,
+      });
+  });
+
   it.each(["truncated_sections", "unavailable_sections"] as const)(
     "does not infer script additions or removals from %s",
     async (section) => {
