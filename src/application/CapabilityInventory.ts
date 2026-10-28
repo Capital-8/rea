@@ -383,11 +383,13 @@ export function compactToolAvailability(
 }
 
 const availabilityFor = (context: AvailabilityContext): Availability => {
+  const workflowAvailability = workflowAvailabilityFor(context);
   if (
     context.targetOpen &&
     context.resourceSession &&
     context.requiresActiveTarget &&
-    !isBundleResourceOperation(context.name)
+    !isBundleResourceOperation(context.name) &&
+    (workflowAvailability === null || context.kind === "session")
   )
     return {
       reason: "target_unsupported",
@@ -417,7 +419,6 @@ const availabilityFor = (context: AvailabilityContext): Availability => {
       reason: "provider_unavailable",
       remediation: `Adapter ${failure.providerId} could not load: ${failure.reason}. Repair the adapter installation and restart REA; other capabilities remain available.`,
     };
-  const workflowAvailability = workflowAvailabilityFor(context);
   if (workflowAvailability !== null) return workflowAvailability;
   const hostDecision = hostAvailability(context);
   if (hostDecision !== null) return hostDecision;

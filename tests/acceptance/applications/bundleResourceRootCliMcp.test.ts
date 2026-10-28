@@ -1,6 +1,7 @@
 import { build } from "plist";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { expect } from "vitest";
 
 import { toolContract } from "../../../src/contracts/toolContracts.js";
@@ -32,6 +33,40 @@ const expectUnsupportedArtifactOperations = (content: unknown) => {
       reason: "target_unsupported",
       remediation: expect.stringContaining("open_binary"),
     });
+};
+
+const expectIndependentResourceWorkflows = async (
+  call: Awaited<ReturnType<typeof connectLocalToolsMcp>>["call"],
+  root: string,
+  firstBundle: string,
+): Promise<void> => {
+  for (const detail of ["summary", "complete"] as const) {
+    const status = await call("binary_session", { detail });
+    expectUnsupportedArtifactOperations(status.structuredContent);
+    const parsed = toolContract("binary_session").outputSchema.parse(
+      status.structuredContent,
+    );
+    for (const name of [
+      "inspect_desktop_application",
+      "inspect_sqlite_database",
+    ])
+      expect(
+        parsed.result.tool_availability.groups.find((group) =>
+          group.names.includes(name),
+        ),
+      ).toMatchObject({ available: true });
+  }
+  const databasePath = join(root, "fixture.sqlite");
+  const database = new DatabaseSync(databasePath);
+  database.exec("CREATE TABLE records (id INTEGER PRIMARY KEY)");
+  database.close();
+  for (const [name, path] of [
+    ["inspect_desktop_application", firstBundle],
+    ["inspect_sqlite_database", databasePath],
+  ] as const) {
+    const result = await call(name, { path });
+    expect(result.isError, JSON.stringify(result)).not.toBe(true);
+  }
 };
 
 cliTest.skipIf(process.platform !== "darwin")(
@@ -109,10 +144,7 @@ cliTest.skipIf(process.platform !== "darwin")(
       },
     });
 
-    for (const detail of ["summary", "complete"] as const) {
-      const status = await call("binary_session", { detail });
-      expectUnsupportedArtifactOperations(status.structuredContent);
-    }
+    await expectIndependentResourceWorkflows(call, root, firstBundle);
     for (const [name, input] of [
       ["inspect_artifact", {}],
       ["extract_artifact", { integrity_policy: "fail" }],

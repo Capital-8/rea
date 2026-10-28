@@ -130,6 +130,7 @@ it("reports the active resource session's dispatch policy without limiting indep
     "inspect_artifact",
     "extract_artifact",
     "trace_dylib_resolution",
+    "get_navigation_context",
   ])
     expect(entries.find((item) => item.name === name)).toMatchObject({
       available: false,
@@ -142,6 +143,8 @@ it("reports the active resource session's dispatch policy without limiting indep
     "inspect_asset_catalog",
     "inspect_keyed_archive",
     "inspect_pe_imports",
+    "inspect_desktop_application",
+    "inspect_sqlite_database",
     "close_binary",
   ])
     expect(entries.find((item) => item.name === name)).toMatchObject({
