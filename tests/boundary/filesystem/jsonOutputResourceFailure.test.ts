@@ -69,3 +69,68 @@ it.each([
     }
   },
 );
+
+/** Fail after the first staged part has been written, before publication. */
+function* limitedParts(): Generator<string> {
+  yield "staged bytes";
+  throw Object.assign(new Error("file size limit"), { code: "EFBIG" });
+}
+
+it.each([false, true])(
+  "retains a staged EFBIG and cleans or retries its owner (cleanup fails: %s)",
+  async (cleanupFails) => {
+    const root = await createTestTempDirectory("rea-staged-resource-");
+    const output = join(root, "out.json");
+    const resources = new ArtifactResourceScope();
+    const { OwnedStagedOutput } =
+      await import("../../../src/filesystem/OwnedStagedOutput.js");
+    const close = vi.spyOn(OwnedStagedOutput.prototype, "close");
+    if (cleanupFails)
+      close.mockRejectedValueOnce(new Error("controlled cleanup refusal"));
+    try {
+      const result = await writeTextParts(
+        limitedParts(),
+        output,
+        false,
+        resources,
+      );
+      if (result.ok) throw new Error("Expected resource refusal");
+      const redacted = redactExplicitFailure(result.error, [
+        "unrelated-secret",
+      ]);
+      const projected = projectAnalysisError(redacted);
+      expect(projected).toMatchObject({
+        code: cleanupFails ? "cleanup_incomplete" : "resource_constraint",
+        details: {
+          reason: "storage-limit",
+          system_code: "EFBIG",
+          path: output,
+        },
+      });
+      const staging = (await readdir(root)).filter((name) =>
+        name.startsWith(".rea-write-"),
+      );
+      expect(staging).toHaveLength(cleanupFails ? 1 : 0);
+      expect((await readdir(root)).includes("out.json")).toBe(false);
+      if (cleanupFails) {
+        expect(resources.hasPending).toBe(true);
+        expect(redacted.cleanupResources).toContain(join(root, staging[0]!));
+        await resources.retryCleanup();
+        expect(resources.hasPending).toBe(false);
+        expect(redacted.cleanupIncomplete).toBe(false);
+        expect(projectAnalysisError(redacted)).toMatchObject({
+          code: "resource_constraint",
+          details: {
+            reason: "storage-limit",
+            system_code: "EFBIG",
+            path: output,
+          },
+        });
+        expect(await readdir(root)).toEqual([]);
+      }
+    } finally {
+      close.mockRestore();
+      await resources.close();
+    }
+  },
+);
