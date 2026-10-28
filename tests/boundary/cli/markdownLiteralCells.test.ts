@@ -102,6 +102,8 @@ cliTest(
       "": "",
       "  中文🙂  ": "  中文🙂  ",
       " &#32; &copy; <T> a|b ": " &#32; &copy; <T> a|b ",
+      "{.hidden}": "literal {.hidden}",
+      "{name=value}": "{name=value}",
     };
     const row = {
       [literal]: literal,
@@ -167,6 +169,29 @@ cliTest(
     expect(
       renderedCells(renderer.render(renderCliDocument(result, "md", false))),
     ).toEqual(expectedCells);
+  },
+);
+
+cliTest(
+  "preserves capability provider identities in rendered Markdown",
+  async ({ cli }) => {
+    const json = await cli.run({ arguments: ["capabilities", "--json"] });
+    const markdown = await cli.run({
+      arguments: ["capabilities", "--format", "md"],
+    });
+    expect(json.exitCode, json.stderr).toBe(0);
+    expect(markdown.exitCode, markdown.stderr).toBe(0);
+    const data = JSON.parse(json.stdout) as {
+      capabilities: { provider: unknown }[];
+    };
+    const renderer = await createMarkdownRenderer(process.cwd(), {
+      linkify: false,
+    });
+    expect(
+      tableColumnByHeader(renderer.render(markdown.stdout), "provider"),
+    ).toEqual(
+      data.capabilities.map(({ provider }) => JSON.stringify(provider)),
+    );
   },
 );
 

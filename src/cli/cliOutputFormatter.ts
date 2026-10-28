@@ -267,7 +267,7 @@ const escapeTableCell = (value: string): string =>
       }
     })
     .replace(/([xXB8]-)\)/g, "$1&#41;")
-    .replace(/[\\|`*[\]~]|_+/g, escapeInlineSyntax)
+    .replace(/[\\|`*[\]~{}]|_+/g, escapeInlineSyntax)
     .replace(/\r\n|\r|\n/g, "<br>");
 
 const encodeMarkdownWhitespace = (whitespace: string): string =>
