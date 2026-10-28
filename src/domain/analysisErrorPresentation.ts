@@ -260,7 +260,10 @@ export const analysisErrorCategory = (
     return "unavailable";
   if (error instanceof ArtifactOperationError)
     return artifactErrorCategory(error.reason);
-  if (error instanceof EvidenceFileError && error.reason === "path-limit")
+  if (
+    error instanceof EvidenceFileError &&
+    (error.reason === "path-limit" || error.reason === "storage-limit")
+  )
     return "resource_constraint";
   if (
     error instanceof EvidenceFileError &&
@@ -564,11 +567,18 @@ const evidenceFileMessage = ({
   operation,
   reason,
   published,
+  systemCode,
 }: EvidenceFileError): string => {
   if (published !== undefined)
     return "The output file was published, but staging cleanup remains incomplete.";
   if (reason === "path-limit")
     return "Filesystem path-length constraints prevented reading or atomic publication at the selected path. Choose a shorter local path.";
+  if (reason === "storage-limit")
+    return systemCode === "EFBIG"
+      ? "The host file-size limit prevented Evidence publication. Increase the inherited file-size allowance and retry."
+      : systemCode === undefined
+        ? "A host filesystem resource limit prevented Evidence publication. Check the file-size allowance, filesystem space and quota before retrying."
+        : "The filesystem lacks space or quota for Evidence publication. Free space or increase quota and retry.";
   if (reason === "missing")
     return operation === "read"
       ? "Evidence file does not exist at the selected path. Check the path and try again."
