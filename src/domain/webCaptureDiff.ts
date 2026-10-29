@@ -1164,42 +1164,81 @@ const scriptsDimension = (
     // Match declarations only within the same fully observed metadata group.
     // An omitted declaration can explain one value in its own group, not a
     // declaration associated with a different observed script hash.
-    const metadataKey = (script: Script) =>
-      digestCanonicalValue({
-        ...Object.fromEntries(fields.map((field) => [field, script[field]])),
-        ...(sourceComparable && script.source.included
-          ? { source_sha256: script.source.artifact.sha256 }
-          : {}),
-      });
+    const metadataFields = [
+      "cdp_hash",
+      "length",
+      "is_module",
+      "language",
+    ] as const;
+    type ScriptMetadata = Partial<
+      Record<
+        (typeof metadataFields)[number] | "source_sha256",
+        string | number | boolean
+      >
+    >;
+    const scriptMetadata = (script: Script): ScriptMetadata => {
+      const metadata: ScriptMetadata = {};
+      for (const field of metadataFields) {
+        const value = script[field];
+        if (value !== null) metadata[field] = value;
+      }
+      if (sourceComparable && script.source.included)
+        metadata.source_sha256 = script.source.artifact.sha256;
+      return metadata;
+    };
+    const metadataCompatible = (
+      left: ScriptMetadata,
+      right: ScriptMetadata,
+    ): boolean =>
+      [...metadataFields, "source_sha256" as const].every(
+        (field) =>
+          left[field] === undefined ||
+          right[field] === undefined ||
+          left[field] === right[field],
+      );
+    // Each script keeps the metadata it actually observed. A null field does
+    // not erase that field for the rest of the URL group, and an omitted
+    // declaration can explain only one compatible script.
     const mapFactsExceed = (
       observed: readonly Script[],
       observedMayOmit: boolean,
       complete: readonly Script[],
       completeMayOmit: boolean,
     ): boolean => {
-      const groups = new Map<
-        string,
-        { known: Map<string | null, number>; unknown: number }
-      >();
-      for (const script of complete) {
-        const key = metadataKey(script);
-        const group = groups.get(key) ?? { known: new Map(), unknown: 0 };
-        const value = script.source_map_url;
-        if (value === null && completeMayOmit) group.unknown++;
-        else group.known.set(value, (group.known.get(value) ?? 0) + 1);
-        groups.set(key, group);
-      }
-      for (const script of observed) {
-        const value = script.source_map_url;
-        if (value === null && observedMayOmit) continue;
-        const group = groups.get(metadataKey(script));
-        if (group === undefined) return true;
-        const count = group.known.get(value) ?? 0;
-        if (count > 0) group.known.set(value, count - 1);
-        else if (group.unknown > 0) group.unknown--;
-        else return true;
-      }
-      return false;
+      const needed = observed.flatMap((script) =>
+        script.source_map_url === null && observedMayOmit
+          ? []
+          : [
+              {
+                metadata: scriptMetadata(script),
+                declaration: script.source_map_url,
+              },
+            ],
+      );
+      const slots = complete.map((script) => ({
+        metadata: scriptMetadata(script),
+        declaration: script.source_map_url,
+        unknown: script.source_map_url === null && completeMayOmit,
+      }));
+      if (needed.length > 8 || slots.length > 12) return false;
+      const used = Array.from({ length: slots.length }, () => false);
+      const assign = (index: number): boolean => {
+        if (index === needed.length) return true;
+        const item = needed[index];
+        if (item === undefined) return false;
+        for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+          if (used[slotIndex]) continue;
+          const slot = slots[slotIndex];
+          if (slot === undefined) continue;
+          if (!metadataCompatible(item.metadata, slot.metadata)) continue;
+          if (!slot.unknown && slot.declaration !== item.declaration) continue;
+          used[slotIndex] = true;
+          if (assign(index + 1)) return true;
+          used[slotIndex] = false;
+        }
+        return false;
+      };
+      return !assign(0);
     };
     const provenMapDifference =
       !mapComparable &&

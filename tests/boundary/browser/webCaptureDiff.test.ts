@@ -1099,6 +1099,61 @@ describe("web capture diff incomplete inventories", () => {
   });
 });
 
+describe("web capture diff partial script metadata", () => {
+  it("proves a map change that a different hash or declaration cannot explain", async () => {
+    const browser = await startFakeCdpBrowser();
+    browsers.push(browser);
+    const captured = await new CdpBrowserProvider().inspectPage(
+      inspectWebPageInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 0,
+      }),
+    );
+    if (!captured.ok) throw captured.error;
+    const known = structuredClone(captured.value);
+    markSectionsComplete(known, ["scripts", "source_maps"]);
+    known.completeness.excluded = known.completeness.excluded.filter(
+      (item) => item.section !== "source_maps",
+    );
+    const script = known.scripts.items[0];
+    if (script === undefined) throw new Error("Missing captured script");
+    script.source_map_url = "https://cdn.example.test/app.js.map";
+    script.cdp_hash = "a".repeat(64);
+    script.length = 10;
+    script.is_module = false;
+    script.language = "JavaScript";
+    const unknownDeclaration = structuredClone(script);
+    unknownDeclaration.cdp_hash = "b".repeat(64);
+    unknownDeclaration.source_map_url = null;
+    const unknownHash = structuredClone(script);
+    unknownHash.cdp_hash = null;
+    unknownHash.source_map_url = "https://cdn.example.test/third.js.map";
+    const before = structuredClone(known);
+    before.scripts.items.push(unknownDeclaration, unknownHash);
+    before.completeness.policy_filtered_sections.push("source_maps");
+    const after = structuredClone(before);
+    after.scripts.items[0]!.source_map_url =
+      "https://cdn.example.test/new.js.map";
+    const compare = (left: typeof known, right: typeof known) =>
+      compareWebCaptures(
+        compareWebCapturesInputSchema.parse({
+          before: { inspection: left },
+          after: { inspection: right },
+        }),
+      ).dimensions.scripts;
+    expect(compare(before, structuredClone(before))).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    expect(compare(before, after)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+  });
+});
+
 describe("web capture diff script inventory coverage", () => {
   it.each(["truncated_sections", "unavailable_sections"] as const)(
     "does not infer script additions or removals from %s",
