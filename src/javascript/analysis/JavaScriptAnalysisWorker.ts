@@ -355,6 +355,9 @@ export class JavaScriptAnalysisWorker {
       );
       for (;;) {
         const response = await this.#next(deadline, file.path);
+        // A frame for another job is not this request's result. Keep waiting
+        // so a later caller abort is still cancellation.
+        if (response.kind !== "ready" && response.id !== id) continue;
         if (response.kind === "ready" || response.id !== id)
           throw new AnalysisOutputError(
             OPERATION,
