@@ -12,6 +12,7 @@ import type {
 import { semanticIdentifierRole } from "./javascriptSemanticProjection.js";
 import { createSemanticCallableStack } from "./javascriptSemanticCallableStack.js";
 import {
+  javaScriptExpressionWrapperTarget,
   readExactJavaScriptLiteral,
   semanticStaticPropertyKey,
   unwrapJavaScriptExpression,
@@ -124,6 +125,23 @@ export const collectJavaScriptSemanticCalls = (
   };
 };
 
+/** TypeScript and grouping wrappers do not consume a call result. */
+const callResultIsUsed = (
+  parent: t.Node | null,
+  ancestors: readonly t.Node[],
+): boolean => {
+  let current = parent;
+  let index = ancestors.length - 1;
+  while (
+    current !== null &&
+    javaScriptExpressionWrapperTarget(current) !== undefined
+  ) {
+    index -= 1;
+    current = index >= 0 ? (ancestors[index] ?? null) : null;
+  }
+  return !t.isExpressionStatement(current);
+};
+
 const collectCallSite = (
   node: t.CallExpression | t.OptionalCallExpression | t.NewExpression,
   parent: t.Node | null,
@@ -146,7 +164,7 @@ const collectCallSite = (
     callerCallableId: owner?.callableId ?? null,
     location: range(node),
     calleeLocation: range(node.callee),
-    resultUsed: !t.isExpressionStatement(parent),
+    resultUsed: callResultIsUsed(parent, context.ancestors),
     resolution:
       resolution.callableIds.length === 1 && resolution.complete
         ? "exact"

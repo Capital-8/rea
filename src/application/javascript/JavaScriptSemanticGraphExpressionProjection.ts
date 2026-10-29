@@ -3,6 +3,7 @@ import {
   javascriptSourceRangeContains,
   javascriptSourceRangeKey,
 } from "../../domain/javascript/javascriptSourceCoordinates.js";
+import type { JavaScriptSourceRange } from "../../domain/javascript/javascriptStaticAnalysisTypes.js";
 import type { JavaScriptSemanticGraphNode } from "../../domain/javascript/javascriptSemanticGraphSchemas.js";
 import type { SemanticFlowProjectionContext } from "./JavaScriptSemanticGraphFlowProjection.js";
 import {
@@ -11,6 +12,41 @@ import {
   retainSemanticGraphNode,
 } from "./JavaScriptSemanticGraphConstruction.js";
 import { unknownSemanticEvidence } from "./JavaScriptSemanticGraphEvidence.js";
+
+const sameArtifact = (
+  node: JavaScriptSemanticGraphNode,
+  context: SemanticFlowProjectionContext,
+): boolean =>
+  node.identity.module_path === context.file.path &&
+  node.identity.artifact_sha256 === context.file.sha256;
+
+/** Reuse a literal already projected for this operand instead of copying it. */
+const existingOperatorLiteral = (
+  context: SemanticFlowProjectionContext,
+  value: string | number | boolean | null,
+  location: JavaScriptSourceRange,
+): JavaScriptSemanticGraphNode | undefined => {
+  const operandKey = javascriptSourceRangeKey(location);
+  for (const node of context.state.nodes.values()) {
+    if (node.kind !== "literal" || node.properties.value !== value) continue;
+    if (!sameArtifact(node, context)) continue;
+    const nodeRange = node.identity.source_range;
+    if (nodeRange === null) continue;
+    if (
+      javascriptSourceRangeKey(nodeRange) === operandKey ||
+      javascriptSourceRangeContains(nodeRange, location)
+    )
+      return node;
+    for (const flow of context.ir.initializerFlows)
+      if (
+        javascriptSourceRangeKey(flow.target) ===
+          javascriptSourceRangeKey(nodeRange) &&
+        javascriptSourceRangeContains(flow.source, location)
+      )
+        return node;
+  }
+  return undefined;
+};
 
 /** Project immediate operator dependencies without treating them as aliases. */
 export function* projectSemanticExpressionInfluence(
@@ -158,14 +194,19 @@ export function* projectSemanticExpressionInfluence(
           ? reads.get(key(operand.location))
           : operand.kind === "expression"
             ? expressions.get(key(operand.location))
-            : retainSemanticGraphNode(context.state, context.file, {
+            : (existingOperatorLiteral(
+                context,
+                operand.literal ?? null,
+                operand.location,
+              ) ??
+              retainSemanticGraphNode(context.state, context.file, {
                 kind: "literal",
-                roleKey: `operator-literal:${index}:${key(operand.location)}`,
+                roleKey: `operator-literal:${key(operand.location)}:${JSON.stringify(operand.literal ?? null)}`,
                 location: operand.location,
                 label: "operator literal",
                 functionNodeId: result?.function_node_id ?? null,
                 properties: { value: operand.literal ?? null },
-              });
+              }));
       if (
         operand.kind === "expression" &&
         source !== undefined &&
