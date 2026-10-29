@@ -1220,6 +1220,14 @@ describe("web capture diff repeated source-map declarations", () => {
       status: "changed",
       total_changes: 1,
     });
+    const repeated = inspection(
+      [...copies(2_000, map("a")), ...copies(1, null)],
+      true,
+    );
+    expect(compare(repeated, structuredClone(repeated))).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
   });
 });
 

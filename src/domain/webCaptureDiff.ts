@@ -1158,15 +1158,129 @@ const declarationCountsExceed = <Metadata>(
   const required = new Map<string | null, number>();
   for (const item of needed)
     required.set(item.declaration, (required.get(item.declaration) ?? 0) + 1);
-  for (const [declaration, count] of required)
-    if (count > (exact.get(declaration) ?? 0) + unknown) return true;
+  let surplus = 0;
+  for (const [declaration, count] of required) {
+    const available = exact.get(declaration) ?? 0;
+    if (count > available + unknown) return true;
+    if (count > available) surplus += count - available;
+  }
+  return surplus > unknown;
+};
+
+const metadataGroupKey = <Metadata>(metadata: Metadata): string => {
+  const record = metadata as Record<
+    string,
+    string | number | boolean | undefined
+  >;
+  return JSON.stringify(
+    Object.keys(record)
+      .sort()
+      .map((key) => [key, record[key]]),
+  );
+};
+
+type CountedScriptMapGroup<Metadata> = ScriptMapCandidate<Metadata> & {
+  count: number;
+};
+type CountedScriptMapSlot<Metadata> = ScriptMapSlot<Metadata> & {
+  count: number;
+};
+
+const groupScriptMapFacts = <
+  Metadata,
+  Item extends ScriptMapCandidate<Metadata>,
+>(
+  items: readonly Item[],
+  keyFor: (item: Item) => string,
+): Array<Item & { count: number }> => {
+  const groups = new Map<string, Item & { count: number }>();
+  for (const item of items) {
+    const key = keyFor(item);
+    const existing = groups.get(key);
+    if (existing === undefined) groups.set(key, { ...item, count: 1 });
+    else existing.count += 1;
+  }
+  return [...groups.values()];
+};
+
+/** Every declaration can use every slot, so counts already decide the result. */
+const scriptMapMetadataFitsAll = <Metadata>(
+  needed: readonly CountedScriptMapGroup<Metadata>[],
+  slots: readonly CountedScriptMapSlot<Metadata>[],
+  metadataCompatible: (left: Metadata, right: Metadata) => boolean,
+): boolean =>
+  needed.every((item) =>
+    slots.every((slot) => metadataCompatible(item.metadata, slot.metadata)),
+  );
+
+/**
+ * True when identical groups cannot be placed. Flow moves whole counts, so
+ * repeated scripts do not become a dense assignment graph.
+ */
+const scriptMapGroupAssignmentExceeds = <Metadata>(
+  needed: readonly CountedScriptMapGroup<Metadata>[],
+  slots: readonly CountedScriptMapSlot<Metadata>[],
+  metadataCompatible: (left: Metadata, right: Metadata) => boolean,
+): boolean => {
+  const residual = slots.map((slot) => slot.count);
+  const demand = needed.map((item) => item.count);
+  const edges = needed.map((item) =>
+    slots.flatMap((slot, index) =>
+      metadataCompatible(item.metadata, slot.metadata) &&
+      (slot.unknown || slot.declaration === item.declaration)
+        ? [index]
+        : [],
+    ),
+  );
+  const flow = new Map<string, number>();
+  const flowKey = (needIndex: number, slotIndex: number): string =>
+    `${String(needIndex)}:${String(slotIndex)}`;
+  const send = (needIndex: number, seen: Set<number>, cap: number): number => {
+    for (const slotIndex of edges[needIndex] ?? []) {
+      if (seen.has(slotIndex)) continue;
+      const free = residual[slotIndex] ?? 0;
+      if (free <= 0) continue;
+      seen.add(slotIndex);
+      const pushed = Math.min(cap, free);
+      residual[slotIndex] = free - pushed;
+      flow.set(
+        flowKey(needIndex, slotIndex),
+        (flow.get(flowKey(needIndex, slotIndex)) ?? 0) + pushed,
+      );
+      return pushed;
+    }
+    for (const slotIndex of edges[needIndex] ?? []) {
+      if (seen.has(slotIndex)) continue;
+      seen.add(slotIndex);
+      for (let other = 0; other < needed.length; other += 1) {
+        if (other === needIndex) continue;
+        const moved = flow.get(flowKey(other, slotIndex)) ?? 0;
+        if (moved <= 0) continue;
+        const rerouted = send(other, seen, Math.min(cap, moved));
+        if (rerouted <= 0) continue;
+        flow.set(flowKey(other, slotIndex), moved - rerouted);
+        flow.set(
+          flowKey(needIndex, slotIndex),
+          (flow.get(flowKey(needIndex, slotIndex)) ?? 0) + rerouted,
+        );
+        return rerouted;
+      }
+    }
+    return 0;
+  };
+  for (let index = 0; index < needed.length; index += 1)
+    while ((demand[index] ?? 0) > 0) {
+      const pushed = send(index, new Set(), demand[index] ?? 0);
+      if (pushed === 0) return true;
+      demand[index] = (demand[index] ?? 0) - pushed;
+    }
   return false;
 };
 
 /**
  * True when observed declarations cannot be placed on the other capture.
- * Identical scripts share one count or one augmenting path, so repeated
- * declarations are not retried as separate permutations.
+ * Identical scripts share one count, so repeated declarations are not retried
+ * as separate permutations.
  */
 const scriptMapFactsExceed = <Metadata>(
   needed: readonly ScriptMapCandidate<Metadata>[],
@@ -1175,39 +1289,22 @@ const scriptMapFactsExceed = <Metadata>(
 ): boolean => {
   if (needed.length === 0) return false;
   if (declarationCountsExceed(needed, slots)) return true;
-  const edges = needed.map((item) => {
-    const targets: number[] = [];
-    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-      const slot = slots[slotIndex];
-      if (slot === undefined) continue;
-      if (!metadataCompatible(item.metadata, slot.metadata)) continue;
-      if (!slot.unknown && slot.declaration !== item.declaration) continue;
-      targets.push(slotIndex);
-    }
-    return targets;
-  });
-  const matchedNeeded = Array.from({ length: slots.length }, () => -1);
-  const assign = (neededIndex: number, seen: boolean[]): boolean => {
-    for (const slotIndex of edges[neededIndex] ?? []) {
-      if (seen[slotIndex] === true) continue;
-      seen[slotIndex] = true;
-      const owner = matchedNeeded[slotIndex];
-      if (owner === undefined || owner < 0 || assign(owner, seen)) {
-        matchedNeeded[slotIndex] = neededIndex;
-        return true;
-      }
-    }
+  const needGroups = groupScriptMapFacts(
+    needed,
+    (item) => `${metadataGroupKey(item.metadata)}\0${item.declaration ?? ""}`,
+  );
+  const slotGroups = groupScriptMapFacts(
+    slots,
+    (slot) =>
+      `${metadataGroupKey(slot.metadata)}\0${slot.declaration ?? ""}\0${slot.unknown ? "unknown" : "exact"}`,
+  );
+  if (scriptMapMetadataFitsAll(needGroups, slotGroups, metadataCompatible))
     return false;
-  };
-  for (let index = 0; index < needed.length; index += 1)
-    if (
-      !assign(
-        index,
-        Array.from({ length: slots.length }, () => false),
-      )
-    )
-      return true;
-  return false;
+  return scriptMapGroupAssignmentExceeds(
+    needGroups,
+    slotGroups,
+    metadataCompatible,
+  );
 };
 
 const scriptsDimension = (
