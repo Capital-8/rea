@@ -1,9 +1,9 @@
 import { build } from "plist";
 import { lstat, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { expect } from "vitest";
 
+import { sqliteDatabaseCapability } from "../../../src/application/sqlite/SqliteDatabaseCapability.js";
 import { toolContract } from "../../../src/contracts/toolContracts.js";
 import { parseEvidence } from "../../../src/domain/evidence.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
@@ -46,27 +46,43 @@ const expectIndependentResourceWorkflows = async (
     const parsed = toolContract("binary_session").outputSchema.parse(
       status.structuredContent,
     );
-    for (const name of [
-      "inspect_desktop_application",
-      "inspect_sqlite_database",
-    ])
+    for (const name of ["inspect_desktop_application"])
       expect(
         parsed.result.tool_availability.groups.find((group) =>
           group.names.includes(name),
         ),
       ).toMatchObject({ available: true });
   }
+  const capability = sqliteDatabaseCapability(process.versions.node);
+  const status = await call("binary_session", { detail: "complete" });
+  const parsed = toolContract("binary_session").outputSchema.parse(
+    status.structuredContent,
+  );
+  expect(
+    parsed.result.tool_availability.groups.find((group) =>
+      group.names.includes("inspect_sqlite_database"),
+    ),
+  ).toMatchObject(
+    capability.available
+      ? { available: true }
+      : {
+          available: false,
+          reason: "provider_unavailable",
+          remediation: capability.reason,
+        },
+  );
+  const desktop = await call("inspect_desktop_application", {
+    path: firstBundle,
+  });
+  expect(desktop.isError, JSON.stringify(desktop)).not.toBe(true);
+  if (!capability.available) return;
   const databasePath = join(root, "fixture.sqlite");
+  const { DatabaseSync } = await import("node:sqlite");
   const database = new DatabaseSync(databasePath);
   database.exec("CREATE TABLE records (id INTEGER PRIMARY KEY)");
   database.close();
-  for (const [name, path] of [
-    ["inspect_desktop_application", firstBundle],
-    ["inspect_sqlite_database", databasePath],
-  ] as const) {
-    const result = await call(name, { path });
-    expect(result.isError, JSON.stringify(result)).not.toBe(true);
-  }
+  const result = await call("inspect_sqlite_database", { path: databasePath });
+  expect(result.isError, JSON.stringify(result)).not.toBe(true);
 };
 
 cliTest.skipIf(process.platform !== "darwin")(

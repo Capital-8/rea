@@ -1,3 +1,4 @@
+import { sqliteDatabaseCapability } from "./sqlite/SqliteDatabaseCapability.js";
 import { pcapCaptureHostSupported } from "../domain/pcap/pcapAnalysis.js";
 import { describe, expect, it } from "vitest";
 
@@ -144,12 +145,23 @@ it("reports the active resource session's dispatch policy without limiting indep
     "inspect_keyed_archive",
     "inspect_pe_imports",
     "inspect_desktop_application",
-    "inspect_sqlite_database",
     "close_binary",
   ])
     expect(entries.find((item) => item.name === name)).toMatchObject({
       available: true,
     });
+  const sqlite = sqliteDatabaseCapability(process.versions.node);
+  expect(
+    entries.find((item) => item.name === "inspect_sqlite_database"),
+  ).toMatchObject(
+    sqlite.available
+      ? { available: true }
+      : {
+          available: false,
+          reason: "provider_unavailable",
+          remediation: sqlite.reason,
+        },
+  );
 });
 
 describe("ADB and Apktool host availability", () => {
