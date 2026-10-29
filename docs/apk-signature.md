@@ -199,10 +199,11 @@ share the application workflow, projection, retention and publication owners.
     declared inter-block signer change is `false` even though rotation is
     present. If v2 also uses the original key, agreement is `false` and the
     declared inter-block change is `true`. `null` when
-    v1 or a block scheme is absent, any signer's identity is unknown (a
+    v1 or a populated block scheme is absent, any signer's identity is unknown (a
     `decode_error`, a `null` certificate or a `subjectKeyIdentifier`
     `SignerInfo`), or the lineage's original certificate cannot be
-    identified; a limitation then says why.
+    identified. When identities or a lineage origin are unknown, limitations
+    explain why; absence is shown in the scheme records.
   - `strongest_scheme`, `rotation_present`, `source_stamp_present`,
     `self_consistent`.
 
