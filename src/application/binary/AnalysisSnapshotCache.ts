@@ -87,7 +87,19 @@ const DOCUMENT_SCOPED_OPERATIONS: ReadonlySet<string> = new Set(
 /** Maximum duplicated result bindings retained across direct and workflow queries. */
 export const SNAPSHOT_CACHE_ENTRY_CEILING = 10_000;
 
-/** Whether a source observation is safe to retain as Evidence. */
+const replayDocumentSelected = (
+  operation: AnalysisOperation,
+  parameters: Readonly<Record<string, JsonValue>>,
+): boolean =>
+  !DOCUMENT_SCOPED_OPERATIONS.has(operation) ||
+  typeof parameters.document === "string";
+
+/**
+ * Whether a source observation is safe to retain as Evidence.
+ * A missing document selector blocks snapshot replay, not retention: composed
+ * caller walks still need the native result and forward observations after the
+ * workflow index is cleared.
+ */
 export const isSourceEvidenceRetainable = (
   operation: AnalysisOperation,
   descriptor: CapabilityDescriptor | undefined,
@@ -95,8 +107,6 @@ export const isSourceEvidenceRetainable = (
 ): descriptor is CapabilityDescriptor =>
   !STATEFUL_OPERATIONS.has(operation) &&
   !RESOURCE_SCOPED_OPERATIONS.has(operation) &&
-  (!DOCUMENT_SCOPED_OPERATIONS.has(operation) ||
-    typeof parameters.document === "string") &&
   (!CURSOR_DEFAULT_OPERATIONS.has(operation) ||
     typeof parameters.address === "string") &&
   descriptor?.effects.mutatesArtifact === false &&
@@ -111,6 +121,7 @@ export const isSnapshotCacheable = (
   parameters: Readonly<Record<string, JsonValue>>,
 ): descriptor is CapabilityDescriptor =>
   isSourceEvidenceRetainable(operation, descriptor, parameters) &&
+  replayDocumentSelected(operation, parameters) &&
   descriptor.cachePolicy !== "live";
 
 /** Windows Ghidra must admit the selected source through its native snapshot owner. */

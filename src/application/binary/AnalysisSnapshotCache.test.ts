@@ -32,6 +32,7 @@ import {
   AnalysisSnapshotCache,
   SNAPSHOT_CACHE_ENTRY_CEILING,
   isSnapshotCacheable,
+  isSourceEvidenceRetainable,
 } from "./AnalysisSnapshotCache.js";
 import { EvidenceLedger } from "../investigation/EvidenceLedger.js";
 import { enhancedOutputSchemas } from "../../contracts/toolOutputSchemaGroups.js";
@@ -776,6 +777,38 @@ describe("analysis snapshot cache policy", () => {
       );
     },
   );
+
+  it("retains caller observations without a document while refusing to replay them", () => {
+    const descriptor: CapabilityDescriptor = {
+      operation: "procedure_callers",
+      provider: ANALYSIS_SNAPSHOT_PROVIDER,
+      available: true,
+      reason: null,
+      effects: {
+        mutatesArtifact: false,
+        launchesProcess: false,
+        mayShowUi: false,
+        mayAccessNetwork: false,
+        mayWriteFilesystem: false,
+        changesPermissions: false,
+        requiresRoot: false,
+      },
+      limitations: [],
+    };
+    const parameters = { procedure: "0x1000" };
+    expect(
+      isSourceEvidenceRetainable("procedure_callers", descriptor, parameters),
+    ).toBe(true);
+    expect(
+      isSnapshotCacheable("procedure_callers", descriptor, parameters),
+    ).toBe(false);
+    expect(
+      isSnapshotCacheable("procedure_callers", descriptor, {
+        ...parameters,
+        document: "fixture",
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("analysis snapshot cache partitioning", () => {
