@@ -260,3 +260,19 @@ it.each([
   expect(result.status).not.toBe("found");
   expect(result.unknowns.length).toBeGreaterThan(0);
 });
+
+it("projects repeated operator literals with indexed lookup", () => {
+  const count = 1_200;
+  const declarations = Array.from(
+    { length: count },
+    (_, index) => `const item${String(index)} = input + "/item";`,
+  );
+  const graph = graphForJavaScript(
+    `const input = "root";\n${declarations.join("\n")}`,
+  );
+  expect(
+    graph.nodes.filter(
+      (node) => node.kind === "literal" && node.properties.value === "/item",
+    ),
+  ).toHaveLength(count);
+});

@@ -20,33 +20,127 @@ const sameArtifact = (
   node.identity.module_path === context.file.path &&
   node.identity.artifact_sha256 === context.file.sha256;
 
-/** Reuse a literal already projected for this operand instead of copying it. */
-const existingOperatorLiteral = (
+const literalValueKey = (value: string | number | boolean | null): string =>
+  `${typeof value}:${JSON.stringify(value)}`;
+
+type IndexedOperatorLiteral = {
+  readonly node: JavaScriptSemanticGraphNode;
+  readonly range: JavaScriptSourceRange;
+  readonly order: number;
+};
+
+/**
+ * Literals are remembered by source range and by initializer target.
+ * A later operand resolves in map lookups instead of rescanning every
+ * retained literal and every initializer.
+ */
+function* operatorLiteralIndex(
   context: SemanticFlowProjectionContext,
-  value: string | number | boolean | null,
-  location: JavaScriptSourceRange,
-): JavaScriptSemanticGraphNode | undefined => {
-  const operandKey = javascriptSourceRangeKey(location);
-  for (const node of context.state.nodes.values()) {
-    if (node.kind !== "literal" || node.properties.value !== value) continue;
-    if (!sameArtifact(node, context)) continue;
-    const nodeRange = node.identity.source_range;
-    if (nodeRange === null) continue;
+): Generator<
+  void,
+  {
+    remember(
+      node: JavaScriptSemanticGraphNode | null,
+    ): JavaScriptSemanticGraphNode | null;
+    find(
+      value: string | number | boolean | null,
+      location: JavaScriptSourceRange,
+    ): JavaScriptSemanticGraphNode | undefined;
+  }
+> {
+  const exact = new Map<string, IndexedOperatorLiteral>();
+  const byValue = new Map<string, IndexedOperatorLiteral[]>();
+  const flowsByOperand = new Map<
+    string,
+    readonly { source: JavaScriptSourceRange; target: JavaScriptSourceRange }[]
+  >();
+  const seen = new Set<string>();
+  let order = 0;
+  let examined = 0;
+  for (const expression of context.ir.expressionFlows) {
+    for (const operand of expression.operands) {
+      if (operand.kind !== "literal") continue;
+      if (examined % 64 === 0) yield;
+      examined += 1;
+      const operandKey = javascriptSourceRangeKey(operand.location);
+      if (flowsByOperand.has(operandKey)) continue;
+      const matches = context.ir.initializerFlows.filter((flow) =>
+        javascriptSourceRangeContains(flow.source, operand.location),
+      );
+      flowsByOperand.set(operandKey, matches);
+    }
+  }
+  const remember = (
+    node: JavaScriptSemanticGraphNode | null,
+  ): JavaScriptSemanticGraphNode | null => {
     if (
-      javascriptSourceRangeKey(nodeRange) === operandKey ||
-      javascriptSourceRangeContains(nodeRange, location)
+      node === null ||
+      node.kind !== "literal" ||
+      !sameArtifact(node, context) ||
+      seen.has(node.node_id)
     )
       return node;
-    for (const flow of context.ir.initializerFlows)
+    const range = node.identity.source_range;
+    const value = node.properties.value;
+    if (
+      range === null ||
+      (typeof value !== "string" &&
+        typeof value !== "number" &&
+        typeof value !== "boolean" &&
+        value !== null)
+    )
+      return node;
+    seen.add(node.node_id);
+    const entry = { node, range, order: order++ };
+    const id = `${literalValueKey(value)}\0${javascriptSourceRangeKey(range)}`;
+    const group = byValue.get(literalValueKey(value)) ?? [];
+    group.push(entry);
+    byValue.set(literalValueKey(value), group);
+    if (!exact.has(id)) exact.set(id, entry);
+    return node;
+  };
+  for (const node of context.state.nodes.values()) remember(node);
+  return {
+    remember,
+    find(value, location) {
+      const valueKey = literalValueKey(value);
+      const operandKey = javascriptSourceRangeKey(location);
+      let best: IndexedOperatorLiteral | undefined;
+      const consider = (entry: IndexedOperatorLiteral | undefined): void => {
+        if (
+          entry !== undefined &&
+          (best === undefined || entry.order < best.order)
+        )
+          best = entry;
+      };
+      consider(exact.get(`${valueKey}\0${operandKey}`));
+      for (const flow of flowsByOperand.get(operandKey) ?? [])
+        consider(
+          exact.get(`${valueKey}\0${javascriptSourceRangeKey(flow.target)}`),
+        );
+      const group = byValue.get(valueKey) ?? [];
+      let low = 0;
+      let high = group.length;
+      while (low < high) {
+        const middle = (low + high) >> 1;
+        const entry = group[middle];
+        if (
+          entry !== undefined &&
+          compareJavaScriptSourcePoints(entry.range.start, location.start) <= 0
+        )
+          low = middle + 1;
+        else high = middle;
+      }
+      const candidate = group[low - 1];
       if (
-        javascriptSourceRangeKey(flow.target) ===
-          javascriptSourceRangeKey(nodeRange) &&
-        javascriptSourceRangeContains(flow.source, location)
+        candidate !== undefined &&
+        javascriptSourceRangeContains(candidate.range, location)
       )
-        return node;
-  }
-  return undefined;
-};
+        consider(candidate);
+      return best?.node;
+    },
+  };
+}
 
 /** Project immediate operator dependencies without treating them as aliases. */
 export function* projectSemanticExpressionInfluence(
@@ -119,6 +213,7 @@ export function* projectSemanticExpressionInfluence(
     );
   let processedOperands = 0;
   let processedReferences = 0;
+  const literals = yield* operatorLiteralIndex(context);
   for (const [index, flow] of context.ir.expressionFlows.entries()) {
     if (index % 64 === 0) yield;
     const result = expressions.get(key(flow.location));
@@ -194,19 +289,17 @@ export function* projectSemanticExpressionInfluence(
           ? reads.get(key(operand.location))
           : operand.kind === "expression"
             ? expressions.get(key(operand.location))
-            : (existingOperatorLiteral(
-                context,
-                operand.literal ?? null,
-                operand.location,
-              ) ??
-              retainSemanticGraphNode(context.state, context.file, {
-                kind: "literal",
-                roleKey: `operator-literal:${key(operand.location)}:${JSON.stringify(operand.literal ?? null)}`,
-                location: operand.location,
-                label: "operator literal",
-                functionNodeId: result?.function_node_id ?? null,
-                properties: { value: operand.literal ?? null },
-              }));
+            : (literals.find(operand.literal ?? null, operand.location) ??
+              literals.remember(
+                retainSemanticGraphNode(context.state, context.file, {
+                  kind: "literal",
+                  roleKey: `operator-literal:${key(operand.location)}:${JSON.stringify(operand.literal ?? null)}`,
+                  location: operand.location,
+                  label: "operator literal",
+                  functionNodeId: result?.function_node_id ?? null,
+                  properties: { value: operand.literal ?? null },
+                }) ?? null,
+              ));
       if (
         operand.kind === "expression" &&
         source !== undefined &&
