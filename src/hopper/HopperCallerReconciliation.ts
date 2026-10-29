@@ -290,6 +290,50 @@ async function buildIndex(
   });
 }
 
+/** One shared identity record; destinations cite addresses instead of copies. */
+const compactForwardDestinations = (
+  destinations: Map<string, Destination>,
+): JsonValue => {
+  const identities = new Map<string, Identity>();
+  const remember = (identity: Identity): void => {
+    if (!identities.has(identity.address))
+      identities.set(identity.address, identity);
+  };
+  const rows = [...destinations.entries()].map(([address, value]) => {
+    const callerAddresses: string[] = [];
+    for (const caller of value.callers.values()) {
+      remember(caller);
+      callerAddresses.push(caller.address);
+    }
+    return {
+      address,
+      caller_addresses: callerAddresses,
+      references: value.references.map(({ caller, edge }) => {
+        remember(caller);
+        if (
+          edge.source_procedure !== null &&
+          edge.source_procedure !== "caller"
+        )
+          remember(edge.source_procedure);
+        return {
+          caller_address: caller.address,
+          source_address: edge.source_address,
+          target_address: edge.target_address,
+          source_procedure:
+            edge.source_procedure === null || edge.source_procedure === "caller"
+              ? edge.source_procedure
+              : edge.source_procedure.address,
+          call: edge.call,
+        };
+      }),
+    };
+  });
+  return {
+    identities: [...identities.values()],
+    destinations: rows,
+  };
+};
+
 export const reconcileHopperCallers = async (
   client: HopperClient,
   operation: Operation,
@@ -323,11 +367,7 @@ export const reconcileHopperCallers = async (
       forward_destinations:
         partial.destinations === null
           ? null
-          : [...partial.destinations.entries()].map(([address, value]) => ({
-              address,
-              callers: [...value.callers.values()],
-              references: value.references,
-            })),
+          : compactForwardDestinations(partial.destinations),
       coverage: {
         status: "unknown",
         reason:

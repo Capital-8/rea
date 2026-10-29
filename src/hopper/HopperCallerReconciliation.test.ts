@@ -267,12 +267,15 @@ it("preserves cancellation while reporting the last page", async () => {
         procedure_total: 1,
         stop: { code: "cancelled" },
       },
-      forward_destinations: [
-        expect.objectContaining({
-          address: target.address,
-          callers: [expect.objectContaining({ address: caller.address })],
-        }),
-      ],
+      forward_destinations: {
+        identities: [expect.objectContaining({ address: caller.address })],
+        destinations: [
+          expect.objectContaining({
+            address: target.address,
+            caller_addresses: [caller.address],
+          }),
+        ],
+      },
     });
   }
 });

@@ -335,12 +335,15 @@ describe("Hopper caller reconciliation failures", () => {
           procedure_total: 2,
           stop: { code: "page_failure" },
         },
-        forward_destinations: [
-          expect.objectContaining({
-            address: "0x1000",
-            callers: [expect.objectContaining({ address: "0x3000" })],
-          }),
-        ],
+        forward_destinations: {
+          identities: [expect.objectContaining({ address: "0x3000" })],
+          destinations: [
+            expect.objectContaining({
+              address: "0x1000",
+              caller_addresses: ["0x3000"],
+            }),
+          ],
+        },
       });
     } finally {
       await client.close();
