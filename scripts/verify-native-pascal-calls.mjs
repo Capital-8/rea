@@ -1,9 +1,8 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { runOwnedCommand } from "../dist/process/OwnedCommand.js";
+import { createPackageVerifierCommands } from "./lib/verify-package-commands.mjs";
 
 import {
   artifactCli,
@@ -29,21 +28,6 @@ const signalHandlers = Object.fromEntries(
 for (const [signal, handler] of Object.entries(signalHandlers))
   process.on(signal, handler);
 
-const execute = async (command, arguments_, { timeout }) => {
-  const result = await runOwnedCommand(
-    {
-      command,
-      arguments: arguments_,
-      runId: `rea-verify-pascal-${randomUUID()}`,
-      expectedCommand: null,
-      cwd: process.cwd(),
-      env: process.env,
-    },
-    { timeoutMs: timeout, diagnosticBytes: 1024 * 1024 },
-    { signal: cancellation.signal },
-  );
-  return { stdout: result.stdout.text, stderr: result.stderr.text };
-};
 const compiler = process.env.REA_VERIFY_FPC_COMMAND;
 if (process.platform !== "darwin" || !isAbsolute(compiler ?? ""))
   throw new Error(
@@ -65,6 +49,19 @@ const callerLines = new Set(
 const allocatedDirectory =
   await createCanonicalTemporaryDirectory("rea-pascal-calls-");
 let directory = allocatedDirectory.path;
+const commands = await createPackageVerifierCommands({
+  workspace: {
+    path: allocatedDirectory.allocatedPath,
+    close: () =>
+      rm(allocatedDirectory.allocatedPath, { recursive: true, force: true }),
+  },
+});
+const execute = (command, arguments_, { timeout }) =>
+  commands.exec(command, arguments_, {
+    timeout,
+    diagnosticBytes: 1024 * 1024,
+    signal: cancellation.signal,
+  });
 const input = {
   breakpoints: [{ kind: "function", name: "rea_pascal_call" }],
   argument_registers: 1,
@@ -161,20 +158,13 @@ try {
   );
 } catch (cause) {
   if (shutdownSignal === undefined) throw cause;
-  const cleanupFailure = cause?.cleanupFailure;
-  if (cleanupFailure !== undefined && cleanupFailure !== null) {
-    console.error(
-      `Verification cancelled by ${shutdownSignal}; owned compiler cleanup is incomplete: ${cleanupFailure}`,
-    );
-    process.exitCode = 1;
-  } else {
-    console.error(
-      `Verification cancelled by ${shutdownSignal}; owned compiler process group was stopped.`,
-    );
-    process.exitCode = signalExitCodes[shutdownSignal];
-  }
+  console.error(`Verification cancelled by ${shutdownSignal}.`);
+  process.exitCode = signalExitCodes[shutdownSignal];
 } finally {
-  for (const signal of Object.keys(signalExitCodes))
-    process.off(signal, signalHandlers[signal]);
-  await rm(allocatedDirectory.allocatedPath, { recursive: true, force: true });
+  try {
+    await commands.close();
+  } finally {
+    for (const signal of Object.keys(signalExitCodes))
+      process.off(signal, signalHandlers[signal]);
+  }
 }
