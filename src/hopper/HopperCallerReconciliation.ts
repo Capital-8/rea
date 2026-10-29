@@ -17,6 +17,16 @@ import { nativeCallClassificationSchema } from "../domain/native/nativeCallRefer
 import { err, ok, type Result } from "../domain/result.js";
 import type { HopperClient } from "./HopperClient.js";
 import { analysisClientFailureForOperation } from "../providers/AnalysisClientFailure.js";
+import {
+  formatHopperCallerScanReason,
+  hopperCallerReconciliationPartialSchema,
+  HOPPER_CALLER_PAGE_ALLOWANCE_BYTES,
+  HOPPER_CALLER_SCAN_RETENTION_BYTES,
+  type HopperCallerReconciliationPartial,
+  type HopperCallerScanCounts,
+  type HopperCallerScanFacts,
+  type HopperCallerScanStop,
+} from "../domain/native/hopperCallerReconciliation.js";
 
 const compactEdgeSchema = z.strictObject({
   source_address: z.string(),
@@ -59,7 +69,9 @@ const referencesSchema = z.strictObject({
   references: z.array(referenceEdgeSchema),
 });
 type Operation =
-  "procedure_callers" | "procedure_references" | "analyze_function";
+  | "procedure_callers"
+  | "procedure_references"
+  | "analyze_function";
 type Identity = z.infer<typeof procedureIdentitySchema>;
 type Edge = z.infer<typeof referenceEdgeSchema>;
 type CompactEdge = z.infer<typeof compactEdgeSchema>;
@@ -67,8 +79,16 @@ type Destination = {
   callers: Map<string, Identity>;
   references: Array<{ caller: Identity; edge: CompactEdge }>;
 };
-type Index = { destinations: Map<string, Destination>; reason: string };
-const MAX_RETAINED_SCAN_BYTES = 4 * 1024 * 1024;
+type Index = {
+  destinations: Map<string, Destination>;
+  counts: HopperCallerScanCounts;
+};
+type ScanFailure = {
+  readonly error: AnalysisError;
+  readonly counts: HopperCallerScanCounts;
+  readonly destinations: Map<string, Destination>;
+  readonly unreadPage?: JsonValue;
+};
 
 /** A child bridge request is a phase of the enclosing user operation. */
 export function reconciliationChildOptions(
@@ -109,13 +129,25 @@ async function reportScanProgress(
   }
 }
 
+const scanCounts = (
+  stop: HopperCallerScanStop,
+  examined: number,
+  procedureTotal: number | undefined,
+  retainedBytes: number,
+): HopperCallerScanCounts => ({
+  examined_procedures: examined,
+  procedure_total: procedureTotal ?? null,
+  retained_bytes: retainedBytes,
+  stop,
+});
+
 async function buildIndex(
   client: HopperClient,
   operation: Operation,
   document: JsonValue | undefined,
   options: ExecutionOptions | undefined,
   budgetMs: number,
-): Promise<Result<Index, AnalysisError>> {
+): Promise<Result<Index, ScanFailure>> {
   const destinations = new Map<string, Destination>();
   const destination = (address: string): Destination => {
     let value = destinations.get(address);
@@ -129,14 +161,25 @@ async function buildIndex(
     total: number | undefined,
     bytes = 0;
   const began = performance.now();
-  let stopped = "";
+  let stop: HopperCallerScanStop = { code: "complete" };
+  const cancelled = (): AnalysisCancelledError =>
+    new AnalysisCancelledError(operation, { cause: options?.signal?.reason });
+  const fail = (
+    error: AnalysisError,
+    failureStop: HopperCallerScanStop,
+    unreadPage?: JsonValue,
+  ): Result<Index, ScanFailure> =>
+    err({
+      error,
+      counts: scanCounts(failureStop, start, total, bytes),
+      destinations,
+      ...(unreadPage === undefined ? {} : { unreadPage }),
+    });
   do {
     if (options?.signal?.aborted)
-      return err(
-        new AnalysisCancelledError(operation, { cause: options.signal.reason }),
-      );
+      return fail(cancelled(), { code: "cancelled" });
     if (start > 0 && performance.now() - began >= budgetMs) {
-      stopped = `the ${budgetMs} ms reconciliation work budget was reached; set REA_HOPPER_CALLER_SCAN_BUDGET_MS and restart REA to change it`;
+      stop = { code: "work_budget", budget_ms: budgetMs };
       break;
     }
     if (start > 0) await reportScanProgress(options, start, total);
@@ -160,20 +203,25 @@ async function buildIndex(
       pageOptions,
     );
     if (!page.ok)
-      return err(
-        analysisClientFailureForOperation(page.error, "hopper", operation),
-      );
-    if (options?.signal?.aborted)
-      return err(
-        new AnalysisCancelledError(operation, { cause: options.signal.reason }),
-      );
+      return options?.signal?.aborted
+        ? fail(cancelled(), { code: "cancelled" })
+        : fail(
+            analysisClientFailureForOperation(page.error, "hopper", operation),
+            { code: "page_failure" },
+          );
     const decoded = pageSchema.safeParse(page.value);
     if (!decoded.success)
-      return err(
-        new AnalysisOutputError(operation, "Invalid Hopper caller scan page", {
-          cause: decoded.error,
-        }),
-      );
+      return options?.signal?.aborted
+        ? fail(cancelled(), { code: "cancelled" }, page.value)
+        : fail(
+            new AnalysisOutputError(
+              operation,
+              "Invalid Hopper caller scan page",
+              { cause: decoded.error },
+            ),
+            { code: "invalid_page" },
+            page.value,
+          );
     const value = decoded.data;
     if (
       value.start !== start ||
@@ -186,24 +234,34 @@ async function buildIndex(
       value.items.length !== value.next - start ||
       (value.oversized && value.next !== start)
     )
-      return err(
-        new AnalysisOutputError(
-          operation,
-          "Invalid Hopper caller scan progress",
-        ),
-      );
+      return options?.signal?.aborted
+        ? fail(cancelled(), { code: "cancelled" }, page.value)
+        : fail(
+            new AnalysisOutputError(
+              operation,
+              "Invalid Hopper caller scan progress",
+            ),
+            { code: "invalid_progress" },
+            page.value,
+          );
     if (total !== undefined && value.total !== total) {
-      stopped = "the procedure inventory changed during reconciliation";
+      stop = { code: "inventory_changed" };
       break;
     }
     total = value.total;
     if (value.oversized) {
-      stopped = "a single procedure exceeded the 512 KiB page allowance";
+      stop = {
+        code: "page_allowance",
+        allowance_bytes: HOPPER_CALLER_PAGE_ALLOWANCE_BYTES,
+      };
       break;
     }
     const pageBytes = Buffer.byteLength(JSON.stringify(page.value));
-    if (pageBytes > MAX_RETAINED_SCAN_BYTES - bytes) {
-      stopped = `the ${MAX_RETAINED_SCAN_BYTES} byte reconciliation retention budget was reached`;
+    if (pageBytes > HOPPER_CALLER_SCAN_RETENTION_BYTES - bytes) {
+      stop = {
+        code: "retention_budget",
+        allowance_bytes: HOPPER_CALLER_SCAN_RETENTION_BYTES,
+      };
       break;
     }
     bytes += pageBytes;
@@ -218,16 +276,17 @@ async function buildIndex(
       }
     }
     start = value.next;
+    if (options?.signal?.aborted)
+      return fail(cancelled(), { code: "cancelled" });
     await reportScanProgress(options, start, total);
+    if (options?.signal?.aborted)
+      return fail(cancelled(), { code: "cancelled" });
   } while (start < (total ?? 0));
   await reportScanProgress(options, start, total, true);
-  if (options?.signal?.aborted)
-    return err(
-      new AnalysisCancelledError(operation, { cause: options.signal.reason }),
-    );
+  if (options?.signal?.aborted) return fail(cancelled(), { code: "cancelled" });
   return ok({
     destinations,
-    reason: `Hopper caller reconciliation examined ${start} of ${total ?? 0} procedures and retained ${bytes} encoded bytes${stopped ? `; ${stopped}` : ""}. Forward and reverse API coverage and consistency during the live scan remain unknown.`,
+    counts: scanCounts(stop, start, total, bytes),
   });
 }
 
@@ -240,19 +299,69 @@ export const reconcileHopperCallers = async (
   budgetMs: number,
 ): Promise<
   Result<
-    { result: JsonValue; rawResult: JsonValue; reason: string },
+    {
+      result: JsonValue;
+      rawResult: JsonValue;
+      reason: string;
+      scan?: HopperCallerScanFacts;
+    },
     AnalysisError
   >
 > => {
+  const retainNative = (
+    error: AnalysisError,
+    partial: {
+      readonly scan: HopperCallerScanFacts | null;
+      readonly destinations: Map<string, Destination> | null;
+      readonly unreadPage?: JsonValue;
+    },
+  ): AnalysisError => {
+    const observation: HopperCallerReconciliationPartial = {
+      kind: "hopper-caller-reconciliation",
+      native_result: original,
+      scan: partial.scan,
+      forward_destinations:
+        partial.destinations === null
+          ? null
+          : [...partial.destinations.entries()].map(([address, value]) => ({
+              address,
+              callers: [...value.callers.values()],
+              references: value.references,
+            })),
+      coverage: {
+        status: "unknown",
+        reason:
+          partial.scan === null
+            ? "Hopper caller reconciliation did not examine the procedure inventory; unexamined procedure relationships are unknown."
+            : formatHopperCallerScanReason(partial.scan),
+        limited_directions:
+          operation === "analyze_function"
+            ? ["callers", "callees"]
+            : ["callers"],
+      },
+      ...(partial.unreadPage === undefined
+        ? {}
+        : { unread_page: partial.unreadPage }),
+    };
+    error.retainPartialObservation(
+      hopperCallerReconciliationPartialSchema.parse(observation),
+    );
+    return error;
+  };
   const base =
     operation === "procedure_callers"
       ? callersBaseSchema.safeParse(original)
       : undefined;
   if (base !== undefined && !base.success)
     return err(
-      new AnalysisOutputError(operation, "Invalid Hopper caller observation", {
-        cause: base.error,
-      }),
+      retainNative(
+        new AnalysisOutputError(
+          operation,
+          "Invalid Hopper caller observation",
+          { cause: base.error },
+        ),
+        { scan: null, destinations: null },
+      ),
     );
   const parsed =
     operation === "procedure_callers"
@@ -264,9 +373,14 @@ export const reconcileHopperCallers = async (
         : referencesSchema.safeParse(original);
   if (!parsed.success)
     return err(
-      new AnalysisOutputError(operation, "Invalid Hopper caller observation", {
-        cause: parsed.error,
-      }),
+      retainNative(
+        new AnalysisOutputError(
+          operation,
+          "Invalid Hopper caller observation",
+          { cause: parsed.error },
+        ),
+        { scan: null, destinations: null },
+      ),
     );
   const args: Record<string, JsonValue> = {};
   if (parameters.document !== undefined) args.document = parameters.document;
@@ -284,22 +398,35 @@ export const reconcileHopperCallers = async (
       );
   if (!targetResponse.ok)
     return err(
-      analysisClientFailureForOperation(
-        targetResponse.error,
-        "hopper",
-        operation,
+      retainNative(
+        analysisClientFailureForOperation(
+          targetResponse.error,
+          "hopper",
+          operation,
+        ),
+        { scan: null, destinations: null },
       ),
     );
   if (options?.signal?.aborted)
     return err(
-      new AnalysisCancelledError(operation, { cause: options.signal.reason }),
+      retainNative(
+        new AnalysisCancelledError(operation, {
+          cause: options.signal.reason,
+        }),
+        { scan: null, destinations: null },
+      ),
     );
   const selected = targetSchema.safeParse(targetResponse.value);
   if (!selected.success)
     return err(
-      new AnalysisOutputError(operation, "Invalid Hopper caller scan target", {
-        cause: selected.error,
-      }),
+      retainNative(
+        new AnalysisOutputError(
+          operation,
+          "Invalid Hopper caller scan target",
+          { cause: selected.error },
+        ),
+        { scan: null, destinations: null },
+      ),
     );
   const { target, instructions, instructions_complete } = selected.data;
   if (
@@ -327,7 +454,24 @@ export const reconcileHopperCallers = async (
       options,
       budgetMs,
     );
-    if (!scanned.ok) return scanned;
+    if (!scanned.ok) {
+      const failure = scanned.error;
+      return err(
+        retainNative(failure.error, {
+          scan: {
+            ...failure.counts,
+            instructions_complete,
+            native_callers_complete: base?.success
+              ? base.data.callers_complete
+              : null,
+          },
+          destinations: failure.destinations,
+          ...(failure.unreadPage === undefined
+            ? {}
+            : { unreadPage: failure.unreadPage }),
+        }),
+      );
+    }
     index = scanned.value;
     if (options?.workScope !== undefined) {
       if (indexByDocument === undefined) {
@@ -410,6 +554,11 @@ export const reconcileHopperCallers = async (
     const facts = referencesSchema.parse(parsed.data);
     result = { ...facts, references: mergeReferences(facts.references) };
   }
+  const scan: HopperCallerScanFacts = {
+    ...index.counts,
+    instructions_complete,
+    native_callers_complete: base?.success ? base.data.callers_complete : null,
+  };
   return ok({
     result,
     rawResult: {
@@ -424,6 +573,7 @@ export const reconcileHopperCallers = async (
           "hopper-public-python-api:getAllCalleeProcedures and CallReference",
       },
     },
-    reason: `${index.reason}${instructions_complete ? "" : " Target instruction enumeration reached the 512 KiB allowance; incoming call-site coverage is incomplete."}${base?.success && !base.data.callers_complete ? " Native caller enumeration reached the 512 KiB allowance." : ""}`,
+    scan,
+    reason: formatHopperCallerScanReason(scan),
   });
 };

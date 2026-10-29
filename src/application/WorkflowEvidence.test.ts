@@ -662,12 +662,20 @@ it("clears workflow state when its callback throws", async () => {
     execute: async (_operation, _parameters, options) => {
       captured = options?.workScope;
       captured?.set(owner, "in flight");
-      return ok(createAnalysisExecution(null, { id: "fixture", name: "Fixture", version: "1" }));
+      return ok(
+        createAnalysisExecution(null, {
+          id: "fixture",
+          name: "Fixture",
+          version: "1",
+        }),
+      );
     },
   };
-  await expect(executeComposedWorkflow(analysis, async (observed) => {
-    await observed.execute("health", {});
-    throw new Error("failed workflow");
-  })).rejects.toThrow("failed workflow");
+  await expect(
+    executeComposedWorkflow(analysis, async (observed) => {
+      await observed.execute("health", {});
+      throw new Error("failed workflow");
+    }),
+  ).rejects.toThrow("failed workflow");
   expect(captured?.get(owner)).toBeUndefined();
 });

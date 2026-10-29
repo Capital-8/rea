@@ -9,6 +9,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { artifactMcpCall } from "./lib/artifact-e2e.mjs";
 import { snapshotHopperRuntime } from "./lib/real-hopper-cleanup.mjs";
 import { HOPPER_TARGET_LEASE_DIRECTORY } from "../dist/process/HopperLease.js";
 
@@ -71,7 +72,8 @@ transport.stderr?.on("data", (chunk) => {
 });
 const call = async (name, args, options = {}) => {
   process.stderr.write(`calling ${name}\n`);
-  const result = await client.callTool(
+  const result = await artifactMcpCall(
+    client,
     { name, arguments: args },
     { timeout: 120000, ...options },
   );
@@ -248,7 +250,8 @@ try {
   let partial = false;
   let resolved = false;
   try {
-    await client.callTool(
+    await artifactMcpCall(
+      client,
       { name: "get_call_graph", arguments: query },
       {
         timeout: 120000,

@@ -1,8 +1,10 @@
 import { expect, it, vi } from "vitest";
-import { ok } from "../domain/result.js";
+import { err, ok } from "../domain/result.js";
 import type { HopperClient } from "./HopperClient.js";
 import { reconcileHopperCallers } from "./HopperCallerReconciliation.js";
 import { AnalysisWorkScope } from "../application/AnalysisWorkScope.js";
+import { formatHopperCallerScanReason } from "../domain/native/hopperCallerReconciliation.js";
+import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
 
 const identity = (address: string) => ({
   address,
@@ -141,7 +143,17 @@ it("merges paged call sites and pins the selected target", async () => {
   expect(result.ok).toBe(true);
   if (!result.ok) return;
   expect(result.value.result).toMatchObject({ references: [edge] });
-  expect(result.value.reason).toContain("65 of 65");
+  expect(result.value.scan).toMatchObject({
+    examined_procedures: 65,
+    procedure_total: 65,
+    stop: { code: "complete" },
+    instructions_complete: true,
+    native_callers_complete: null,
+  });
+  if (result.value.scan === undefined) throw new Error("missing scan facts");
+  expect(result.value.reason).toBe(
+    formatHopperCallerScanReason(result.value.scan),
+  );
   expect(callTool.mock.calls[2]?.[1]).toMatchObject({ start: 64 });
 });
 it("does not reuse a previous scan", async () => {
@@ -204,6 +216,16 @@ it("stops between pages on cancellation", async () => {
   if (!result.ok) {
     expect(result.error._tag).toBe("AnalysisCancelledError");
     expect(result.error.cause).toBe("test cancellation");
+    expect(result.error.partialObservation).toMatchObject({
+      kind: "hopper-caller-reconciliation",
+      native_result: base,
+      coverage: { status: "unknown" },
+      scan: {
+        examined_procedures: 64,
+        procedure_total: 65,
+        stop: { code: "cancelled" },
+      },
+    });
   }
   expect(callTool).toHaveBeenCalledTimes(1);
 });
@@ -234,7 +256,59 @@ it("preserves cancellation while reporting the last page", async () => {
     250,
   );
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.error.cause).toBe("cancelled in progress");
+  if (!result.ok) {
+    expect(result.error.cause).toBe("cancelled in progress");
+    expect(result.error.partialObservation).toMatchObject({
+      kind: "hopper-caller-reconciliation",
+      native_result: base,
+      coverage: { status: "unknown" },
+      scan: {
+        examined_procedures: 1,
+        procedure_total: 1,
+        stop: { code: "cancelled" },
+      },
+      forward_destinations: [
+        expect.objectContaining({
+          address: target.address,
+          callers: [expect.objectContaining({ address: caller.address })],
+        }),
+      ],
+    });
+  }
+});
+it("retains completed pages when a later scan page fails", async () => {
+  let pages = 0;
+  const callTool = vi.fn().mockImplementation((method: string) => {
+    if (method === "rea_caller_scan_target")
+      return Promise.resolve(ok(reply(method)));
+    pages += 1;
+    if (pages === 1) return Promise.resolve(ok(page(0)));
+    return Promise.resolve(
+      err(
+        new AnalysisOutputError("rea_caller_scan_page", "bridge page failed"),
+      ),
+    );
+  });
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    base,
+    undefined,
+    250,
+  );
+  expect(result.ok).toBe(false);
+  if (result.ok) return;
+  expect(result.error.partialObservation).toMatchObject({
+    kind: "hopper-caller-reconciliation",
+    native_result: base,
+    coverage: { status: "unknown" },
+    scan: {
+      examined_procedures: 64,
+      procedure_total: 65,
+      stop: { code: "page_failure" },
+    },
+  });
 });
 it("reports a changing inventory as incomplete", async () => {
   const callTool = vi
@@ -257,7 +331,16 @@ it("reports a changing inventory as incomplete", async () => {
     250,
   );
   expect(result.ok).toBe(true);
-  if (result.ok) expect(result.value.reason).toContain("64 of 65");
+  if (!result.ok) return;
+  expect(result.value.scan).toMatchObject({
+    examined_procedures: 64,
+    procedure_total: 65,
+    stop: { code: "inventory_changed" },
+  });
+  if (result.value.scan === undefined) throw new Error("missing scan facts");
+  expect(result.value.reason).toBe(
+    formatHopperCallerScanReason(result.value.scan),
+  );
 });
 
 it("retains original callers and reports a procedure that exceeds the page allowance", async () => {
@@ -277,8 +360,17 @@ it("retains original callers and reports a procedure that exceeds the page allow
   expect(result.ok).toBe(true);
   if (result.ok) {
     expect(result.value.result).toEqual(["0x1000"]);
-    expect(result.value.reason).toContain(
-      "single procedure exceeded the 512 KiB page allowance",
+    expect(result.value.scan).toMatchObject({
+      examined_procedures: 0,
+      procedure_total: 65,
+      stop: {
+        code: "page_allowance",
+        allowance_bytes: 512 * 1024,
+      },
+    });
+    if (result.value.scan === undefined) throw new Error("missing scan facts");
+    expect(result.value.reason).toBe(
+      formatHopperCallerScanReason(result.value.scan),
     );
   }
 });
@@ -299,11 +391,16 @@ it("reports truncated target instructions and native callers", async () => {
   );
   expect(result.ok).toBe(true);
   if (result.ok) {
-    expect(result.value.reason).toContain(
-      "Target instruction enumeration reached the 512 KiB allowance",
-    );
-    expect(result.value.reason).toContain(
-      "Native caller enumeration reached the 512 KiB allowance",
+    expect(result.value.scan).toMatchObject({
+      examined_procedures: 0,
+      procedure_total: 0,
+      stop: { code: "complete" },
+      instructions_complete: false,
+      native_callers_complete: false,
+    });
+    if (result.value.scan === undefined) throw new Error("missing scan facts");
+    expect(result.value.reason).toBe(
+      formatHopperCallerScanReason(result.value.scan),
     );
   }
 });

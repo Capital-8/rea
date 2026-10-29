@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { parseConfig } from "../config/parseConfig.js";
 import { silentLogger } from "../logger.js";
-import { ok } from "../domain/result.js";
+import { err, ok } from "../domain/result.js";
+import { AnalysisOutputError } from "../domain/analysisErrorCore.js";
 import { HopperClient } from "./HopperClient.js";
 import { HopperProvider } from "./HopperProvider.js";
 import { isSnapshotCacheable } from "../application/binary/AnalysisSnapshotCache.js";
@@ -256,4 +257,94 @@ describe("Hopper relationship coverage", () => {
       }
     },
   );
+});
+
+describe("Hopper caller reconciliation failures", () => {
+  it("keeps the native caller reply when a later scan page fails", async () => {
+    const config = parseConfig({});
+    if (!config.ok) throw config.error;
+    const identity = (address: string) => ({
+      address,
+      name: address,
+      symbol: null,
+      classification: null,
+      body: { available: false as const, reason: "unknown" },
+    });
+    const native = {
+      target: identity("0x1000"),
+      instructions: ["0x1000"],
+      instructions_complete: true,
+      callers: ["0x1111"],
+      callers_complete: true,
+    };
+    let pages = 0;
+    const callTool = vi
+      .spyOn(HopperClient.prototype, "callTool")
+      .mockImplementation((method) => {
+        if (method === "rea_caller_base") return Promise.resolve(ok(native));
+        if (method !== "rea_caller_scan_page") return Promise.resolve(ok(null));
+        pages += 1;
+        if (pages === 1)
+          return Promise.resolve(
+            ok({
+              start: 0,
+              next: 1,
+              total: 2,
+              oversized: false,
+              items: [
+                {
+                  caller: identity("0x3000"),
+                  callees: ["0x1000"],
+                  references: [],
+                },
+              ],
+            }),
+          );
+        return Promise.resolve(
+          err(
+            new AnalysisOutputError(
+              "rea_caller_scan_page",
+              "bridge page failed",
+            ),
+          ),
+        );
+      });
+    const client = new HopperProvider(
+      config.value,
+      silentLogger,
+      {},
+      "linux",
+    ).createClient({
+      path: "/tmp/fixture.hop",
+      sha256: "a".repeat(64),
+      kind: "database",
+      format: "analysis-database",
+    });
+    try {
+      const observed = await client.execute("procedure_callers", {
+        procedure: "0x1000",
+      });
+      expect(observed.ok).toBe(false);
+      if (observed.ok) return;
+      expect(observed.error.partialObservation).toMatchObject({
+        kind: "hopper-caller-reconciliation",
+        native_result: native,
+        coverage: { status: "unknown", limited_directions: ["callers"] },
+        scan: {
+          examined_procedures: 1,
+          procedure_total: 2,
+          stop: { code: "page_failure" },
+        },
+        forward_destinations: [
+          expect.objectContaining({
+            address: "0x1000",
+            callers: [expect.objectContaining({ address: "0x3000" })],
+          }),
+        ],
+      });
+    } finally {
+      await client.close();
+      callTool.mockRestore();
+    }
+  });
 });
