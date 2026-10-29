@@ -1132,6 +1132,84 @@ const domDimension = (
       };
 };
 
+type ScriptMapCandidate<Metadata> = {
+  readonly metadata: Metadata;
+  readonly declaration: string | null;
+};
+type ScriptMapSlot<Metadata> = ScriptMapCandidate<Metadata> & {
+  readonly unknown: boolean;
+};
+
+/** A declaration needs more placements than its exact slots plus every unknown. */
+const declarationCountsExceed = <Metadata>(
+  needed: readonly ScriptMapCandidate<Metadata>[],
+  slots: readonly ScriptMapSlot<Metadata>[],
+): boolean => {
+  if (needed.length > slots.length) return true;
+  let unknown = 0;
+  const exact = new Map<string | null, number>();
+  for (const slot of slots) {
+    if (slot.unknown) {
+      unknown += 1;
+      continue;
+    }
+    exact.set(slot.declaration, (exact.get(slot.declaration) ?? 0) + 1);
+  }
+  const required = new Map<string | null, number>();
+  for (const item of needed)
+    required.set(item.declaration, (required.get(item.declaration) ?? 0) + 1);
+  for (const [declaration, count] of required)
+    if (count > (exact.get(declaration) ?? 0) + unknown) return true;
+  return false;
+};
+
+/**
+ * True when observed declarations cannot be placed on the other capture.
+ * Identical scripts share one count or one augmenting path, so repeated
+ * declarations are not retried as separate permutations.
+ */
+const scriptMapFactsExceed = <Metadata>(
+  needed: readonly ScriptMapCandidate<Metadata>[],
+  slots: readonly ScriptMapSlot<Metadata>[],
+  metadataCompatible: (left: Metadata, right: Metadata) => boolean,
+): boolean => {
+  if (needed.length === 0) return false;
+  if (declarationCountsExceed(needed, slots)) return true;
+  const edges = needed.map((item) => {
+    const targets: number[] = [];
+    for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
+      const slot = slots[slotIndex];
+      if (slot === undefined) continue;
+      if (!metadataCompatible(item.metadata, slot.metadata)) continue;
+      if (!slot.unknown && slot.declaration !== item.declaration) continue;
+      targets.push(slotIndex);
+    }
+    return targets;
+  });
+  const matchedNeeded = Array.from({ length: slots.length }, () => -1);
+  const assign = (neededIndex: number, seen: boolean[]): boolean => {
+    for (const slotIndex of edges[neededIndex] ?? []) {
+      if (seen[slotIndex] === true) continue;
+      seen[slotIndex] = true;
+      const owner = matchedNeeded[slotIndex];
+      if (owner === undefined || owner < 0 || assign(owner, seen)) {
+        matchedNeeded[slotIndex] = neededIndex;
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let index = 0; index < needed.length; index += 1)
+    if (
+      !assign(
+        index,
+        Array.from({ length: slots.length }, () => false),
+      )
+    )
+      return true;
+  return false;
+};
+
 const scriptsDimension = (
   before: WebPageInspection,
   after: WebPageInspection,
@@ -1256,25 +1334,7 @@ const scriptsDimension = (
         declaration: script.source_map_url,
         unknown: script.source_map_url === null && completeMayOmit,
       }));
-      if (needed.length > 8 || slots.length > 12) return false;
-      const used = Array.from({ length: slots.length }, () => false);
-      const assign = (index: number): boolean => {
-        if (index === needed.length) return true;
-        const item = needed[index];
-        if (item === undefined) return false;
-        for (let slotIndex = 0; slotIndex < slots.length; slotIndex += 1) {
-          if (used[slotIndex]) continue;
-          const slot = slots[slotIndex];
-          if (slot === undefined) continue;
-          if (!metadataCompatible(item.metadata, slot.metadata)) continue;
-          if (!slot.unknown && slot.declaration !== item.declaration) continue;
-          used[slotIndex] = true;
-          if (assign(index + 1)) return true;
-          used[slotIndex] = false;
-        }
-        return false;
-      };
-      return !assign(0);
+      return scriptMapFactsExceed(needed, slots, metadataCompatible);
     };
     const provenMapDifference =
       !mapComparable &&

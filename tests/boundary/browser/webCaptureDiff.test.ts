@@ -1154,6 +1154,75 @@ describe("web capture diff partial script metadata", () => {
   });
 });
 
+describe("web capture diff repeated source-map declarations", () => {
+  it("proves differences that declaration counts cannot explain", async () => {
+    const browser = await startFakeCdpBrowser();
+    browsers.push(browser);
+    const captured = await new CdpBrowserProvider().inspectPage(
+      inspectWebPageInputSchema.parse({
+        cdp_endpoint: browser.endpoint,
+        allowed_origins: [browser.allowedOrigin],
+        target_id: "allowed-page",
+        observation_ms: 0,
+      }),
+    );
+    if (!captured.ok) throw captured.error;
+    const template = captured.value.scripts.items[0];
+    if (template === undefined) throw new Error("Missing captured script");
+    const copies = (count: number, sourceMapUrl: string | null) =>
+      Array.from({ length: count }, () => {
+        const script = structuredClone(template);
+        script.source_map_url = sourceMapUrl;
+        return script;
+      });
+    const inspection = (
+      items: typeof captured.value.scripts.items,
+      omitDeclarations: boolean,
+    ) => {
+      const value = structuredClone(captured.value);
+      markSectionsComplete(value, ["scripts", "source_maps"]);
+      value.scripts.items = items;
+      if (omitDeclarations)
+        value.completeness.policy_filtered_sections.push("source_maps");
+      return value;
+    };
+    const compare = (
+      left: typeof captured.value,
+      right: typeof captured.value,
+    ) =>
+      compareWebCaptures(
+        compareWebCapturesInputSchema.parse({
+          before: { inspection: left },
+          after: { inspection: right },
+        }),
+      ).dimensions.scripts;
+    const map = (name: string) => `https://cdn.example.test/${name}.js.map`;
+    const nineX = inspection(
+      [...copies(9, map("x")), ...copies(1, null)],
+      true,
+    );
+    const tenY = inspection(copies(10, map("y")), false);
+    const sevenA = inspection(
+      [...copies(7, map("a")), ...copies(1, map("b")), ...copies(1, null)],
+      true,
+    );
+    const twelveA = inspection(copies(12, map("a")), false);
+
+    expect(compare(nineX, structuredClone(nineX))).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
+    expect(compare(nineX, tenY)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+    expect(compare(sevenA, twelveA)).toMatchObject({
+      status: "changed",
+      total_changes: 1,
+    });
+  });
+});
+
 describe("web capture diff script inventory coverage", () => {
   it.each(["truncated_sections", "unavailable_sections"] as const)(
     "does not infer script additions or removals from %s",
