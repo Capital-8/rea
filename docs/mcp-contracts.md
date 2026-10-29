@@ -177,8 +177,13 @@ if retention is unavailable or fails, the diagnostic reports that reason.
 SDK-generated input validation failures are normalized into the same canonical
 `invalid_request` text when the bounded diagnostic fits the response budget.
 The complete field/type diagnostic is preserved when normalization fits the
-response budget, including request-specific rejected fields and reasons. Oversized
-SDK diagnostics keep the existing retained-Evidence recovery path. An unknown
+response budget, including request-specific rejected fields and reasons. Zod
+input issues retain their field paths and available type and range constraints.
+SDK diagnostic parts may be distributed between field issues and the main
+message so each retained explanation appears once.
+If their conservative projection allowance is exhausted, the response states
+that field-level detail was omitted and retains the original SDK diagnostic.
+Oversized SDK diagnostics keep the existing retained-Evidence recovery path. An unknown
 tool remains an MCP JSON-RPC `-32602` error, but its message directs the caller
 to `tools/list` and an advertised operation instead of repeating the unknown
 name.
@@ -435,10 +440,12 @@ result's `_meta`, whether the call succeeded or failed:
 ```
 
 The marker is declared once per tool contract (`returnsTargetContent`) and is
-on by default: only `export_evidence_bundle` and `record_unknown`, whose
-results and errors contain only REA session state or caller-supplied values,
-omit it. Tools whose results or errors can include provider, launcher, or
-device output stay marked, including `binary_session` (provider failure
+on by default: `export_evidence_bundle`, `record_unknown`, `search_guidance`,
+and `read_guidance_section` omit it. The first two contain only REA session
+state or caller-supplied values; the guidance tools return REA's own installed
+documentation, not text from an analysis target. Tools whose results or errors
+can include provider, launcher, or device output stay marked, including
+`binary_session` (provider failure
 reasons and availability diagnostics), `close_binary` (provider cleanup
 diagnostics with captured launcher output), `inspect_adb_client` and
 `inspect_apktool_client` (version output and stderr excerpts), and
