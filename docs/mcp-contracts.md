@@ -69,13 +69,14 @@ the same Evidence authentication failures: an admitted source that fails
 authentication is `evidence_integrity_mismatch`, while an authenticated source with an unsupported
 workflow role or invalid selector is `invalid_request`.
 
-Ghidra inventories and function replies use `raw_result: null` when their facts
-are already preserved in `normalized_result`, limitations, locations and
-relationship coverage. Distinct overview details, measured load-image
-observations, file-offset selection roles and database types supplemented with
-derived metadata keep their upstream representation. Read function results from
-`normalized_result`; older retained Evidence keeps its original representation
-and identity.
+Ghidra inventories, measured load-image observations and function replies use
+`raw_result: null` when their useful facts are already preserved in
+`normalized_result`, limitations, locations and relationship coverage. Distinct
+overview details, file-offset selection roles and database types supplemented
+with derived metadata keep their upstream representation. Native load-image
+attestation continues to use the bridge reply locally before Evidence
+projection. Read function results from `normalized_result`; older retained
+Evidence keeps its original representation and identity.
 
 Artifact source-map filename relationships require a unique, identified regular
 file at the sibling path. A known directory cannot be the mapped file; the map
@@ -366,6 +367,38 @@ that buffer. It does not raise REA's reserved single-string limit, which is
 1024 UTF-16 code units below Node's single-string ceiling, and it does not
 raise that Node ceiling. It does not change analysis coverage or retained
 content. Ordinary responses keep their existing complete result contract.
+
+### Input validation resource allowance
+
+Both HTTP and stdio admit at most 1,024 combined array elements and object
+members in one tool's arguments by default. The pinned SDK counts them before
+canonical schema validation or lazy runtime materialization. Oversized calls
+return a bounded, nonretryable `resource_constraint` with resource `transport`
+and `reported_limits.max_input_elements`; the full element count is not claimed.
+No provider or tool handler starts for a refused call. Subsequent calls remain
+usable.
+
+Set `REA_MCP_MAX_INPUT_ELEMENTS` to a positive decimal safe integer and restart
+REA to select another allowance for a larger complete observation or batch.
+Where a tool supports retained-Evidence or Evidence-file selectors, prefer
+those selectors to resending large inline records. Admission never truncates
+the caller's selected input or removes retained Evidence.
+This is a configurable transport admission policy, not a per-array `maxItems`
+contract or an exact heap guarantee. Missing required fields can amplify one
+input element into many issues: on the pinned Evidence array schema,
+1,024 empty objects produced 16,384 issues and about 26 MiB heapUsed delta
+before SDK formatting. The default therefore admits at most 1,023 such objects
+plus the root member, rather than extrapolating the scalar case to larger batches;
+actual memory also depends on schema branches, runtime state and concurrent
+work. HTTP's separate request-byte limit and the client's receive limit still
+apply.
+
+Canonical schemas and CLI/application analysis semantics remain shared and
+unchanged. Admitted arguments retain the same values and ordinary validation
+diagnostics. SDK embedders can select `maxToolInputElements` in the server
+options; the common REA MCP server supplies the finite default to eager and
+deferred registrations alike. This does not impose the separate semantic
+batch-workload limit tracked in issue #5930.
 
 ### Error recovery and deadline ownership
 

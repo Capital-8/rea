@@ -1,6 +1,7 @@
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { expect } from "vitest";
+import { UNSIGNED_ATTRIBUTES_LIMITATION } from "../../src/native/pe/PeCertificateParser.js";
 import { toolContract } from "../../src/contracts/toolContracts.js";
 import {
   peCertificateFixture,
@@ -11,6 +12,45 @@ import {
 import { repeatedCertificateSignedData } from "../fixtures/peCertificateAllowance.js";
 import { createTestTempDirectory } from "../fixtures/temporaryDirectory.js";
 import { cliTest } from "../support/cli/cliFixture.js";
+
+cliTest.for(["pubkey", "signature"])(
+  "rejects nonzero BIT STRING padding in %s through the public CLI",
+  async (field, { cli }) => {
+    const root = await createTestTempDirectory("rea-pe-cert-bit-padding-");
+    const path = join(root, "padding.exe");
+    const payload = pkcs7SignedDataFixture();
+    const marker = Buffer.concat([
+      Buffer.from([0x03, field.length + 1, 0]),
+      Buffer.from(field),
+    ]);
+    const at = payload.indexOf(marker);
+    expect(at).toBeGreaterThanOrEqual(0);
+    payload[at + 2] = 1;
+    await writeFile(path, peCertificateFixture(false, payload));
+    const invalid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.json).toMatchObject({
+      code: "invalid_request",
+      details: { operation: "inspect_pe_certificates" },
+    });
+    // Only zero the advertised unused bit; all ASN.1 lengths stay unchanged.
+    const last = at + marker.length - 1;
+    payload[last] = payload[last]! & 0xfe;
+    await writeFile(path, peCertificateFixture(false, payload));
+    const valid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(valid.exitCode, valid.stderr).toBe(0);
+    const evidence = toolContract("inspect_pe_certificates").outputSchema.parse(
+      valid.json,
+    );
+    expect(
+      evidence.normalized_result.entries[0]?.pkcs7?.certificates[0]?.serial_hex,
+    ).toBe("11223344");
+  },
+);
 
 cliTest(
   "reports PKCS#7 signer identity through the public CLI",
@@ -30,6 +70,32 @@ cliTest(
     ).toBe("11223344");
   },
 );
+
+cliTest("reports unsigned attributes through CLI and MCP", async ({ cli }) => {
+  const root = await createTestTempDirectory("rea-pe-cert-unsigned-attrs-");
+  const path = join(root, "timestamped.exe");
+  const payload = pkcs7SignedDataFixture(undefined, undefined, undefined, [
+    [1, 3, 6, 1, 4, 1, 311, 3, 3, 1],
+  ]);
+  await writeFile(path, peCertificateFixture(true, payload));
+  const result = await cli.run({
+    arguments: ["inspect-pe-certificates", path, "--json"],
+  });
+  expect(result.exitCode, result.stderr).toBe(0);
+  const call = await cli.sharedMcpCall!();
+  const response = await call("inspect_pe_certificates", { path });
+  expect(response.isError, JSON.stringify(response)).not.toBe(true);
+  for (const value of [result.json, response.structuredContent]) {
+    const report = toolContract("inspect_pe_certificates").outputSchema.parse(
+      value,
+    ).normalized_result;
+    expect(report.coverage.status).toBe("partial");
+    expect(
+      report.entries[0]?.pkcs7?.signers[0]?.unsigned_attribute_oids,
+    ).toEqual(["1.3.6.1.4.1.311.3.3.1"]);
+    expect(report.limitations).toContain(UNSIGNED_ATTRIBUTES_LIMITATION);
+  }
+});
 
 cliTest(
   "inspects SignedData with an indefinite constructed ContentInfo envelope",
@@ -140,6 +206,43 @@ cliTest(
       code: "invalid_request",
       details: { operation: "inspect_pe_certificates" },
     });
+  },
+);
+
+cliTest(
+  "rejects surrogate pairs in BMPString certificate names and accepts valid neighboring code units",
+  async ({ cli }) => {
+    const root = await createTestTempDirectory("rea-pe-cert-cli-bmp-");
+    const path = join(root, "bmp.exe");
+    const payload = pkcs7SignedDataFixture("ABCD");
+    const nameAt = payload.indexOf(
+      Buffer.from([0x0c, 0x04, 0x41, 0x42, 0x43, 0x44]),
+    );
+    expect(nameAt).toBeGreaterThanOrEqual(0);
+    // Equal-size replacement keeps the DER lengths and all unrelated fields intact.
+    Buffer.from([0x1e, 0x04, 0xd8, 0, 0xdc, 0]).copy(payload, nameAt);
+    await writeFile(path, peCertificateFixture(false, payload));
+    const invalid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(invalid.exitCode).toBe(1);
+    expect(invalid.json).toMatchObject({
+      code: "invalid_request",
+      details: { operation: "inspect_pe_certificates" },
+    });
+    Buffer.from([0x1e, 0x04, 0xd7, 0xff, 0xe0, 0]).copy(payload, nameAt);
+    await writeFile(path, peCertificateFixture(false, payload));
+    const valid = await cli.run({
+      arguments: ["inspect-pe-certificates", path, "--json"],
+    });
+    expect(valid.exitCode, valid.stderr).toBe(0);
+    const evidence = toolContract("inspect_pe_certificates").outputSchema.parse(
+      valid.json,
+    );
+    expect(
+      evidence.normalized_result.entries[0]?.pkcs7?.certificates[0]?.issuer
+        .text,
+    ).toBe("commonName=\ud7ff\ue000, organizationName=REA Tests");
   },
 );
 
