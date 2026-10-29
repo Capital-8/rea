@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { z } from "zod";
+import { awaitAcknowledgement } from "../../fixtures/lifecycleAcknowledgement.js";
 
 const mock = vi.hoisted(() => ({ spawn: vi.fn(), port: vi.fn() }));
 vi.mock("../../../dist/process/ProviderProcess.js", () => ({
@@ -165,11 +166,19 @@ it.each(["empty targets", "discovery timeout"] as const)(
       },
     );
     try {
-      await server.published;
+      await awaitAcknowledgement(
+        server.published,
+        pending,
+        "fixture port publication",
+      );
       await setImmediate();
       expect(settled).toBe(false);
       if (mode === "empty targets") {
-        await server.listed;
+        await awaitAcknowledgement(
+          server.listed,
+          pending,
+          "fixture target listing",
+        );
         expect(settled).toBe(false);
         server.makeReady();
       }
@@ -207,7 +216,11 @@ it("interrupts pending discovery when the owned fixture exits", async () => {
     "exited before CDP discovery",
   );
   try {
-    await server.listed;
+    await awaitAcknowledgement(
+      server.listed,
+      pending,
+      "fixture target listing",
+    );
     server.exit();
     await rejected;
     expect(server.cleanup).toHaveBeenCalledTimes(1);
