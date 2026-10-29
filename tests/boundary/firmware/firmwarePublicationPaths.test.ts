@@ -1,5 +1,13 @@
 import { createHash } from "node:crypto";
-import { access, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  readFile,
+  readlink,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { expect, it, vi } from "vitest";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
@@ -227,7 +235,9 @@ it("publishes the writer's normalized path while retaining source spelling and u
           link_target_hex: "73616d706c65efbfbd",
         },
       ]);
-      await expect(access(join(output, "raw-link"))).rejects.toMatchObject({
+      const rawLink = join(output, "raw-link");
+      await expect(lstat(rawLink)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readlink(rawLink)).rejects.toMatchObject({
         code: "ENOENT",
       });
       await validateAdvertisedFirmwareOutput(result);
