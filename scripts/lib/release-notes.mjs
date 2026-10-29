@@ -476,7 +476,7 @@ export async function verifyInventoryHistory(run, raw, source) {
       "package-lock.json",
       "server.json",
       "src/generatedPackageMetadata.ts",
-      "docs/getting-started/installation.md", // Historical releases before documentation organization.
+      "docs/installation.md", // Historical releases before documentation organization.
       "docs/getting-started/installation.md",
       `docs/releases/${inventory.version}.contributions.json`,
     ]);
