@@ -1028,6 +1028,27 @@ describe("web capture diff incomplete inventories", () => {
         status: "changed",
         total_changes: 1,
       });
+    const linkedBefore = structuredClone(repeated);
+    linkedBefore.scripts.items[0]!.cdp_hash = "b".repeat(64);
+    const linkedAfter = structuredClone(linkedBefore);
+    linkedAfter.scripts.items[1]!.source_map_url =
+      "https://cdn.example.test/new.map";
+    for (const [left, right] of [
+      [linkedBefore, linkedAfter],
+      [linkedAfter, linkedBefore],
+    ] as const)
+      expect(compare(left, right)).toMatchObject({
+        status: "changed",
+        total_changes: 1,
+      });
+    const ambiguous = structuredClone(linkedAfter);
+    ambiguous.scripts.items[0]!.cdp_hash = "a".repeat(64);
+    const ambiguousBefore = structuredClone(linkedBefore);
+    ambiguousBefore.scripts.items[0]!.cdp_hash = "a".repeat(64);
+    expect(compare(ambiguousBefore, ambiguous)).toMatchObject({
+      status: "unknown",
+      total_changes: 0,
+    });
     const incompleteRepeated = structuredClone(repeated);
     incompleteRepeated.completeness.truncated_sections.push("scripts");
     expect(compare(incompleteRepeated, completeRepeated)).toMatchObject({
