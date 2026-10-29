@@ -343,6 +343,27 @@ Hopper regex mode.
 
 ## Bounded static traces
 
+Hopper caller queries, incoming procedure references and function dossiers
+reconcile reported reverse relationships with forward call observations. Each
+standalone query or composed workflow scans the current document in pages of at
+most 64 procedures and retains at most 4 MiB of encoded scan results. A composed
+workflow reuses its own index and clears it when the workflow finishes. The
+default cooperative scan budget is
+2,000 ms; set `REA_HOPPER_CALLER_SCAN_BUDGET_MS` to a positive integer number of
+milliseconds before starting REA to change it. The default limits additional
+work on the serial Hopper bridge; larger documents may need a higher setting.
+Results report the examined procedure count and any budget interruption.
+An individual page, native caller list, and target instruction list each have
+a 512 KiB encoded allowance. Hitting one reports the incomplete observation.
+Cancellation is checked between pages, but cannot interrupt a Hopper API call
+already executing; Hopper's native API itself materializes its reference arrays
+before REA can bound their copies. Hopper exposes no document revision token, so scans are not
+reused across workflows and coverage and consistency during a live scan remain
+unknown even when every procedure was examined.
+Hopper observations are re-observed rather than replayed from snapshots because
+the provider has no document revision token. Safe observations may still be
+retained as Evidence.
+
 `trace_native_ui_action` / `rea trace-native-ui-action <target> <seed>` accepts
 one authored selector/object ID, native symbol or exact function address. It
 joins UI wiring to uniquely matched class/selector implementations and follows
@@ -666,7 +687,7 @@ complete observation.
   summary keeps every decoded document and node/edge/coverage counts and
   retains the complete Evidence; page rows with `inspect_analysis_view`
   `view: {kind: "interface-builder", collection: "nodes", document:
-  "Contents/Resources/Base.lproj/MainMenu.nib", offset: 0, limit: 64}`.
+"Contents/Resources/Base.lproj/MainMenu.nib", offset: 0, limit: 64}`.
   `document` selects rows whose evidence names that exact
   `documents[].relative_path` (nodes and edges only); `source_truncated` keeps
   graph incompleteness visible on every page. `verify:interface-builder` compiles

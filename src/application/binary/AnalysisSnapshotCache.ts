@@ -87,8 +87,8 @@ const DOCUMENT_SCOPED_OPERATIONS: ReadonlySet<string> = new Set(
 /** Maximum duplicated result bindings retained across direct and workflow queries. */
 export const SNAPSHOT_CACHE_ENTRY_CEILING = 10_000;
 
-/** Whether an operation is immutable and independent of provider UI state. */
-export const isSnapshotCacheable = (
+/** Whether a source observation is safe to retain as Evidence. */
+export const isSourceEvidenceRetainable = (
   operation: AnalysisOperation,
   descriptor: CapabilityDescriptor | undefined,
   parameters: Readonly<Record<string, JsonValue>>,
@@ -100,10 +100,18 @@ export const isSnapshotCacheable = (
   (!CURSOR_DEFAULT_OPERATIONS.has(operation) ||
     typeof parameters.address === "string") &&
   descriptor?.effects.mutatesArtifact === false &&
-  descriptor.cachePolicy !== "live" &&
   (descriptor.cachePolicy === "snapshot" ||
     descriptor.effects.mayWriteFilesystem === false) &&
   descriptor.effects.changesPermissions === false;
+
+/** Whether an observation can additionally be replayed as a snapshot. */
+export const isSnapshotCacheable = (
+  operation: AnalysisOperation,
+  descriptor: CapabilityDescriptor | undefined,
+  parameters: Readonly<Record<string, JsonValue>>,
+): descriptor is CapabilityDescriptor =>
+  isSourceEvidenceRetainable(operation, descriptor, parameters) &&
+  descriptor.cachePolicy !== "live";
 
 /** Windows Ghidra must admit the selected source through its native snapshot owner. */
 export const requiresNativeSourceAdmissionBeforeReplay = (

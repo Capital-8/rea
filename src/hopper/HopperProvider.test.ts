@@ -5,8 +5,44 @@ import { silentLogger } from "../logger.js";
 import { ok } from "../domain/result.js";
 import { HopperClient } from "./HopperClient.js";
 import { HopperProvider } from "./HopperProvider.js";
+import { isSnapshotCacheable } from "../application/binary/AnalysisSnapshotCache.js";
+import { routeAllowsSnapshotReplay } from "../application/binary/SessionProviderPolicy.js";
+import type { SessionProviderRoute } from "../application/binary/SessionProviderRouter.js";
 
 describe("Hopper provider capabilities", () => {
+  it("does not replay snapshots for mutable Hopper document observations", () => {
+    const config = parseConfig({});
+    if (!config.ok) throw config.error;
+    const provider = new HopperProvider(config.value, silentLogger, {});
+    const capabilities = provider.capabilities();
+    const route: SessionProviderRoute = {
+      identity: provider.identity(),
+      capabilities: new Map(capabilities.map((item) => [item.operation, item])),
+      profile: null,
+      binding: null,
+      selection: undefined,
+      createClient: () => {
+        throw new Error("No client needed");
+      },
+    };
+    const readable = capabilities.filter(
+      (item) => item.available && !item.effects.mutatesArtifact,
+    );
+    expect(readable.length).toBeGreaterThan(0);
+    for (const descriptor of readable) {
+      expect(descriptor.cachePolicy).toBe("live");
+      expect(routeAllowsSnapshotReplay(route, descriptor.operation)).toBe(
+        false,
+      );
+      expect(
+        isSnapshotCacheable(descriptor.operation, descriptor, {
+          document: "selected",
+          address: "0x1000",
+        }),
+      ).toBe(false);
+    }
+    expect(routeAllowsSnapshotReplay(route, "get_call_graph")).toBe(false);
+  });
   it("declines caller-selected gamecube-dol targets before the ELF powerpc gate", () => {
     const config = parseConfig({});
     if (!config.ok) throw new Error("expected valid configuration");
@@ -129,18 +165,65 @@ describe("Hopper relationship coverage", () => {
     async (operation, directions) => {
       const config = parseConfig({});
       if (!config.ok) throw config.error;
+      const identity = (address: string) => ({
+        address,
+        name: address,
+        symbol: null,
+        classification: null,
+        body: { available: false as const, reason: "unknown" },
+      });
       const source =
         operation === "analyze_function"
           ? {
+              procedure: { ...identity("0x1000"), signature: null, locals: [] },
+              pseudocode: "",
+              assembly: [],
+              comments: [],
               callers: [],
-              callees: [{ address: "0x2000", name: "tail_target" }],
+              callees: [identity("0x2000")],
+              incoming_references: [],
+              outgoing_references: [],
+              referenced_strings: [],
+              referenced_names: [],
+              basic_blocks: [],
+              native_api: null,
+              native_value_flow: null,
+              limitations: [],
             }
           : operation === "procedure_callees"
             ? ["0x2000"]
             : [];
       const callTool = vi
         .spyOn(HopperClient.prototype, "callTool")
-        .mockResolvedValue(ok(source));
+        .mockImplementation((method) =>
+          Promise.resolve(
+            ok(
+              method === "rea_caller_base"
+                ? {
+                    target: identity("0x1000"),
+                    instructions: ["0x1000"],
+                    instructions_complete: true,
+                    callers: [],
+                    callers_complete: true,
+                  }
+                : method === "rea_caller_scan_target"
+                  ? {
+                      target: identity("0x1000"),
+                      instructions: ["0x1000"],
+                      instructions_complete: true,
+                    }
+                  : method === "rea_caller_scan_page"
+                    ? {
+                        start: 0,
+                        next: 0,
+                        total: 0,
+                        items: [],
+                        oversized: false,
+                      }
+                    : source,
+            ),
+          ),
+        );
       const client = new HopperProvider(
         config.value,
         silentLogger,
@@ -161,7 +244,11 @@ describe("Hopper relationship coverage", () => {
         expect(observed.value.relationshipCoverage).toMatchObject({
           status: "unknown",
           limited_directions: directions,
-          reason: expect.stringContaining("resolved tail calls"),
+          reason: expect.stringContaining(
+            operation === "procedure_callees"
+              ? "resolved tail calls"
+              : "reconciliation examined",
+          ),
         });
       } finally {
         await client.close();

@@ -1,0 +1,309 @@
+import { expect, it, vi } from "vitest";
+import { ok } from "../domain/result.js";
+import type { HopperClient } from "./HopperClient.js";
+import { reconcileHopperCallers } from "./HopperCallerReconciliation.js";
+import { AnalysisWorkScope } from "../application/AnalysisWorkScope.js";
+
+const identity = (address: string) => ({
+  address,
+  name: address,
+  symbol: null,
+  classification: null,
+  body: { available: false as const, reason: "unknown" },
+});
+const target = identity("0x2000");
+const caller = identity("0x3000");
+const edge = {
+  source_address: "0x3004",
+  target_address: "0x2000",
+  source_procedure: caller,
+  target_procedure: target,
+  kind: {
+    available: false as const,
+    reason:
+      "Hopper exposes partial CallReference classification, but not detailed reference flags",
+  },
+  call: {
+    classification: "direct" as const,
+    provider_type: 2,
+    provenance: "hopper-public-python-api:CallReference",
+  },
+};
+const compactEdge = {
+  source_address: edge.source_address,
+  target_address: edge.target_address,
+  source_procedure: "caller" as const,
+  target_procedure: target.address,
+  call: edge.call,
+};
+const page = (start: number) => ({
+  start,
+  next: start === 0 ? 64 : 65,
+  total: 65,
+  oversized: false,
+  items:
+    start === 0
+      ? Array.from({ length: 64 }, (_, index) => ({
+          caller: identity(`0x${(0x4000 + index).toString(16)}`),
+          callees: [],
+          references: [],
+        }))
+      : [{ caller, callees: [target.address], references: [compactEdge] }],
+});
+const reply = (method: string, start = 0) =>
+  method === "rea_caller_scan_target"
+    ? { target, instructions: [target.address], instructions_complete: true }
+    : page(start);
+const base = {
+  target,
+  instructions: [target.address],
+  instructions_complete: true,
+  callers: [],
+  callers_complete: true,
+};
+const referenceResult = {
+  procedure: target,
+  direction: "incoming",
+  reference_kinds_available: false,
+  unresolved_calls: [],
+  references: [],
+};
+
+it("builds one forward index for successive queries in a workflow", async () => {
+  const callTool = vi
+    .fn()
+    .mockImplementation((method, args: { start: number }) =>
+      Promise.resolve(ok(reply(method, args.start))),
+    );
+  const client = { callTool } as unknown as HopperClient;
+  const scope = new AnalysisWorkScope();
+  const options = { workScope: scope };
+  const first = await reconcileHopperCallers(
+    client,
+    "procedure_callers",
+    { procedure: "name" },
+    base,
+    options,
+    250,
+  );
+  const second = await reconcileHopperCallers(
+    client,
+    "procedure_references",
+    { procedure: "name", direction: "incoming" },
+    referenceResult,
+    options,
+    250,
+  );
+  expect(first.ok && first.value.result).toEqual(["0x3000"]);
+  if (first.ok)
+    expect(first.value.rawResult).toMatchObject({
+      native_result: { callers: [] },
+      forward_observations: {
+        target: { address: "0x2000" },
+        callee_inventory_callers: [{ address: "0x3000" }],
+        call_references: [edge],
+      },
+    });
+  expect(second.ok && second.value.result).toMatchObject({
+    references: [edge],
+  });
+  expect(
+    callTool.mock.calls.filter(([method]) => method === "rea_caller_scan_page"),
+  ).toHaveLength(2);
+  scope.clear();
+  await reconcileHopperCallers(
+    client,
+    "procedure_callers",
+    { procedure: "name" },
+    base,
+    options,
+    250,
+  );
+  expect(
+    callTool.mock.calls.filter(([method]) => method === "rea_caller_scan_page"),
+  ).toHaveLength(4);
+});
+it("merges paged call sites and pins the selected target", async () => {
+  const callTool = vi
+    .fn()
+    .mockImplementation((method, args: { start: number }) =>
+      Promise.resolve(ok(reply(method, args.start))),
+    );
+  const client = { callTool } as unknown as HopperClient;
+  const result = await reconcileHopperCallers(
+    client,
+    "procedure_references",
+    { procedure: "name", direction: "incoming" },
+    referenceResult,
+    undefined,
+    250,
+  );
+  expect(result.ok).toBe(true);
+  if (!result.ok) return;
+  expect(result.value.result).toMatchObject({ references: [edge] });
+  expect(result.value.reason).toContain("65 of 65");
+  expect(callTool.mock.calls[2]?.[1]).toMatchObject({ start: 64 });
+});
+it("does not reuse a previous scan", async () => {
+  const callTool = vi
+    .fn()
+    .mockImplementation((method, args: { start: number }) =>
+      Promise.resolve(ok(reply(method, args.start))),
+    );
+  const client = { callTool } as unknown as HopperClient;
+  const result = await reconcileHopperCallers(
+    client,
+    "procedure_callers",
+    { procedure: "name" },
+    base,
+    undefined,
+    250,
+  );
+  expect(result.ok && result.value.result).toEqual(["0x3000"]);
+  callTool.mockImplementation((method, args: { start: number }) =>
+    Promise.resolve(
+      ok(
+        method === "rea_caller_scan_target"
+          ? reply(method)
+          : {
+              ...page(args.start),
+              items: page(args.start).items.map((item) => ({
+                ...item,
+                callees: [],
+                references: [],
+              })),
+            },
+      ),
+    ),
+  );
+  const changed = await reconcileHopperCallers(
+    client,
+    "procedure_callers",
+    { procedure: "name" },
+    base,
+    undefined,
+    250,
+  );
+  expect(changed.ok && changed.value.result).toEqual([]);
+});
+it("stops between pages on cancellation", async () => {
+  const controller = new AbortController();
+  const callTool = vi.fn().mockImplementation((method: string) => {
+    controller.abort("test cancellation");
+    return Promise.resolve(ok(reply(method)));
+  });
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    base,
+    { signal: controller.signal },
+    250,
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) {
+    expect(result.error._tag).toBe("AnalysisCancelledError");
+    expect(result.error.cause).toBe("test cancellation");
+  }
+  expect(callTool).toHaveBeenCalledTimes(1);
+});
+it("preserves cancellation while reporting the last page", async () => {
+  const controller = new AbortController();
+  const callTool = vi
+    .fn()
+    .mockImplementation((method: string) =>
+      Promise.resolve(
+        ok(
+          method === "rea_caller_scan_target"
+            ? reply(method)
+            : { ...page(64), start: 0, next: 1, total: 1 },
+        ),
+      ),
+    );
+  const progress = {
+    report: async () => {
+      controller.abort("cancelled in progress");
+    },
+  };
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    base,
+    { signal: controller.signal, progress },
+    250,
+  );
+  expect(result.ok).toBe(false);
+  if (!result.ok) expect(result.error.cause).toBe("cancelled in progress");
+});
+it("reports a changing inventory as incomplete", async () => {
+  const callTool = vi
+    .fn()
+    .mockImplementation((method, args: { start: number }) =>
+      Promise.resolve(
+        ok(
+          method === "rea_caller_scan_target"
+            ? reply(method)
+            : { ...page(args.start), total: args.start === 0 ? 65 : 66 },
+        ),
+      ),
+    );
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    base,
+    undefined,
+    250,
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) expect(result.value.reason).toContain("64 of 65");
+});
+
+it("retains original callers and reports a procedure that exceeds the page allowance", async () => {
+  const callTool = vi
+    .fn()
+    .mockResolvedValue(
+      ok({ start: 0, next: 0, total: 65, oversized: true, items: [] }),
+    );
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    { ...base, callers: ["0x1000"] },
+    undefined,
+    250,
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.result).toEqual(["0x1000"]);
+    expect(result.value.reason).toContain(
+      "single procedure exceeded the 512 KiB page allowance",
+    );
+  }
+});
+
+it("reports truncated target instructions and native callers", async () => {
+  const callTool = vi
+    .fn()
+    .mockResolvedValue(
+      ok({ start: 0, next: 0, total: 0, oversized: false, items: [] }),
+    );
+  const result = await reconcileHopperCallers(
+    { callTool } as unknown as HopperClient,
+    "procedure_callers",
+    {},
+    { ...base, instructions_complete: false, callers_complete: false },
+    undefined,
+    250,
+  );
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.reason).toContain(
+      "Target instruction enumeration reached the 512 KiB allowance",
+    );
+    expect(result.value.reason).toContain(
+      "Native caller enumeration reached the 512 KiB allowance",
+    );
+  }
+});

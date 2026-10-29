@@ -31,6 +31,8 @@ export interface AppConfig {
   readonly ilspyCmdPath: string | undefined;
   readonly hopperLauncherPath: string;
   readonly hopperStartupTimeoutMs: number;
+  /** Cooperative per-operation budget for forward caller reconciliation. */
+  readonly hopperCallerScanBudgetMs: number;
   readonly hopperTargetPath: string | undefined;
   readonly hopperTargetKind: "executable" | "database";
   readonly hopperLoaderArgs: readonly string[];
