@@ -1041,13 +1041,32 @@ const projectCalls = (context: FileContext): void => {
       relation: "returns-to-call",
       resolution: context.callResolutions.get(flow.callSiteId) ?? "candidate",
     });
-  for (const flow of context.ir.callResultFlows)
-    addRelation(context.state, {
-      source: context.callSiteNodes.get(flow.callSiteId),
-      target: context.bindingNodes.get(flow.bindingId),
-      relation: "aliases",
-      resolution: context.callResolutions.get(flow.callSiteId) ?? "candidate",
-    });
+  for (const flow of context.ir.callResultFlows) {
+    const resolution =
+      context.callResolutions.get(flow.callSiteId) ?? "candidate";
+    const target = context.bindingNodes.get(flow.bindingId);
+    const returns = context.ir.callReturnFlows.filter(
+      (item) => item.callSiteId === flow.callSiteId,
+    );
+    // A literal argument may influence the invocation. The assigned value
+    // comes from modeled returns, so an ignored parameter does not reach it.
+    if (returns.length === 0) {
+      addRelation(context.state, {
+        source: context.callSiteNodes.get(flow.callSiteId),
+        target,
+        relation: "aliases",
+        resolution,
+      });
+      continue;
+    }
+    for (const item of returns)
+      addRelation(context.state, {
+        source: context.returnSiteNodes.get(item.returnSiteId),
+        target,
+        relation: "aliases",
+        resolution,
+      });
+  }
   projectSemanticReturnValues(context);
 };
 

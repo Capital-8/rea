@@ -127,19 +127,28 @@ export const collectJavaScriptSemanticCalls = (
 
 /** TypeScript and grouping wrappers do not consume a call result. */
 const callResultIsUsed = (
+  call: t.Node,
   parent: t.Node | null,
   ancestors: readonly t.Node[],
 ): boolean => {
   let current = parent;
+  let child = call;
   let index = ancestors.length - 1;
   while (
     current !== null &&
     javaScriptExpressionWrapperTarget(current) !== undefined
   ) {
+    child = current;
     index -= 1;
     current = index >= 0 ? (ancestors[index] ?? null) : null;
   }
-  return !t.isExpressionStatement(current);
+  if (t.isExpressionStatement(current)) return false;
+  // for/of and for/in heads use their expressions. A C-style for initializer
+  // or update discards the value.
+  return !(
+    t.isForStatement(current) &&
+    (current.init === child || current.update === child)
+  );
 };
 
 const collectCallSite = (
@@ -164,7 +173,7 @@ const collectCallSite = (
     callerCallableId: owner?.callableId ?? null,
     location: range(node),
     calleeLocation: range(node.callee),
-    resultUsed: callResultIsUsed(parent, context.ancestors),
+    resultUsed: callResultIsUsed(node, parent, context.ancestors),
     resolution:
       resolution.callableIds.length === 1 && resolution.complete
         ? "exact"

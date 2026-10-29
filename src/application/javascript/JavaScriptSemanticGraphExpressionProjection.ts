@@ -30,46 +30,25 @@ type IndexedOperatorLiteral = {
 };
 
 /**
- * Literals are remembered by source range and by initializer target.
- * A later operand resolves in map lookups instead of rescanning every
- * retained literal and every initializer.
+ * Literals are remembered by their own source range and value.
+ * An initializer that merely contains another occurrence, including a
+ * nested function body, does not reuse the declaration's literal.
  */
-function* operatorLiteralIndex(
+const operatorLiteralIndex = (
   context: SemanticFlowProjectionContext,
-): Generator<
-  void,
-  {
-    remember(
-      node: JavaScriptSemanticGraphNode | null,
-    ): JavaScriptSemanticGraphNode | null;
-    find(
-      value: string | number | boolean | null,
-      location: JavaScriptSourceRange,
-    ): JavaScriptSemanticGraphNode | undefined;
-  }
-> {
+): {
+  remember(
+    node: JavaScriptSemanticGraphNode | null,
+  ): JavaScriptSemanticGraphNode | null;
+  find(
+    value: string | number | boolean | null,
+    location: JavaScriptSourceRange,
+  ): JavaScriptSemanticGraphNode | undefined;
+} => {
   const exact = new Map<string, IndexedOperatorLiteral>();
   const byValue = new Map<string, IndexedOperatorLiteral[]>();
-  const flowsByOperand = new Map<
-    string,
-    readonly { source: JavaScriptSourceRange; target: JavaScriptSourceRange }[]
-  >();
   const seen = new Set<string>();
   let order = 0;
-  let examined = 0;
-  for (const expression of context.ir.expressionFlows) {
-    for (const operand of expression.operands) {
-      if (operand.kind !== "literal") continue;
-      if (examined % 64 === 0) yield;
-      examined += 1;
-      const operandKey = javascriptSourceRangeKey(operand.location);
-      if (flowsByOperand.has(operandKey)) continue;
-      const matches = context.ir.initializerFlows.filter((flow) =>
-        javascriptSourceRangeContains(flow.source, operand.location),
-      );
-      flowsByOperand.set(operandKey, matches);
-    }
-  }
   const remember = (
     node: JavaScriptSemanticGraphNode | null,
   ): JavaScriptSemanticGraphNode | null => {
@@ -114,10 +93,6 @@ function* operatorLiteralIndex(
           best = entry;
       };
       consider(exact.get(`${valueKey}\0${operandKey}`));
-      for (const flow of flowsByOperand.get(operandKey) ?? [])
-        consider(
-          exact.get(`${valueKey}\0${javascriptSourceRangeKey(flow.target)}`),
-        );
       const group = byValue.get(valueKey) ?? [];
       let low = 0;
       let high = group.length;
@@ -140,7 +115,7 @@ function* operatorLiteralIndex(
       return best?.node;
     },
   };
-}
+};
 
 /** Project immediate operator dependencies without treating them as aliases. */
 export function* projectSemanticExpressionInfluence(
@@ -213,7 +188,7 @@ export function* projectSemanticExpressionInfluence(
     );
   let processedOperands = 0;
   let processedReferences = 0;
-  const literals = yield* operatorLiteralIndex(context);
+  const literals = operatorLiteralIndex(context);
   for (const [index, flow] of context.ir.expressionFlows.entries()) {
     if (index % 64 === 0) yield;
     const result = expressions.get(key(flow.location));

@@ -261,6 +261,67 @@ it.each([
   expect(result.unknowns.length).toBeGreaterThan(0);
 });
 
+it("does not reuse an outer literal for the same text in a nested function", () => {
+  const graph = graphForJavaScript(
+    'const suffix = "end"; const value = true ? "token" : () => "token" + suffix;',
+  );
+  const tokens = graph.nodes.filter(
+    (node) => node.kind === "literal" && node.properties.value === "token",
+  );
+  expect(tokens.length).toBeGreaterThan(1);
+  const inner = tokens.find((node) => node.function_node_id !== null);
+  const outer = tokens.find((node) => node.function_node_id === null);
+  if (inner === undefined || outer === undefined)
+    throw new Error("Expected separate outer and nested token literals");
+  expect(inner.identity.source_range).not.toEqual(outer.identity.source_range);
+  const traced = queryJavaScriptSemanticGraph(
+    graph,
+    javaScriptSemanticQueryInputSchema.parse({
+      seed: { kind: "semantic-node", node_id: outer.node_id },
+      direction: "forward-influence",
+    }),
+  );
+  expect(traced.nodes.map((node) => node.node_id)).not.toContain(inner.node_id);
+});
+
+it("does not send an ignored literal argument to the call result", () => {
+  const graph = graphForJavaScript(
+    'function ignore(x) { return "safe"; } const result = ignore("token");',
+  );
+  const resultBinding = graph.nodes.find(
+    (node) => node.kind === "binding" && node.label === "result",
+  );
+  if (resultBinding === undefined) throw new Error("Expected result binding");
+  const forward = queryJavaScriptSemanticGraph(
+    graph,
+    javaScriptSemanticQueryInputSchema.parse({
+      seed: { kind: "literal", value: "token" },
+      direction: "forward-influence",
+    }),
+  );
+  expect(forward.nodes.some((node) => node.kind === "call-site")).toBe(true);
+  expect(forward.nodes.map((node) => node.node_id)).not.toContain(
+    resultBinding.node_id,
+  );
+  const backward = queryJavaScriptSemanticGraph(
+    graph,
+    javaScriptSemanticQueryInputSchema.parse({
+      seed: { kind: "semantic-node", node_id: resultBinding.node_id },
+      direction: "backward-provenance",
+    }),
+  );
+  expect(
+    backward.nodes.some(
+      (node) =>
+        node.properties.value === "token" ||
+        node.properties.literal_argument_value === "token",
+    ),
+  ).toBe(false);
+  expect(backward.nodes.some((node) => node.properties.value === "safe")).toBe(
+    true,
+  );
+});
+
 it("projects repeated operator literals with indexed lookup", () => {
   const count = 1_200;
   const declarations = Array.from(
