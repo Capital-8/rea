@@ -32,6 +32,14 @@ export const DEFAULT_GHIDRA_STARTUP_TIMEOUT_MS = 330_000;
 export const DEFAULT_HOPPER_STARTUP_TIMEOUT_MS = 120_000;
 
 /**
+ * Default wall-clock budget for one Hopper caller-scan reconciliation, in
+ * milliseconds. The first page always runs; a later page is not requested
+ * after this budget. Set `REA_HOPPER_CALLER_SCAN_BUDGET_MS` before starting
+ * REA to change it.
+ */
+export const DEFAULT_HOPPER_CALLER_SCAN_BUDGET_MS = 2_000;
+
+/**
  * Largest delay Node schedules exactly. Delays above this signed 32-bit
  * boundary become a 1 ms timer, so startup and swiftc timeouts stop here.
  */
