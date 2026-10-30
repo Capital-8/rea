@@ -26,6 +26,7 @@ import { semanticStoredSourceSelection } from "./javascriptSemanticIterationSour
 import {
   semanticEffectPathCandidates,
   semanticEffectPathMatches,
+  semanticSomeEffectPathCandidate,
 } from "./javascriptSemanticEffectPathIndex.js";
 import {
   semanticAliasSelectionChoices,
@@ -363,7 +364,9 @@ const projectedSourceFactsAtRead = (
           (replacement.assignedSources?.[0]?.target?.start ?? -1)));
   if (
     includeUnknown &&
-    semanticEffectPathCandidates(binding.escapedPaths, path).some(
+    semanticSomeEffectPathCandidate(
+      binding.escapedPaths,
+      path,
       (effect) => matches(effect) && !superseded(effect),
     )
   )

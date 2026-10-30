@@ -79,21 +79,19 @@ const currentEffectPathIndex = (
   return index;
 };
 
-/**
- * Effects whose recorded path may match a projected read, in record order.
- * Only records longer than the read, or with an exact key that no selected
- * choice names, are skipped. Wildcard and copied-slot keys stay candidates,
- * so callers still apply `semanticEffectPathMatches`.
- */
-export const semanticEffectPathCandidates = (
+// Visit record positions whose recorded path may match a projected read, in
+// index order. Only records longer than the read, or with an exact key that no
+// selected choice names, are skipped; wildcard and copied-slot keys remain.
+// Returns true as soon as `visit` does.
+const visitEffectPathCandidates = (
   effects: readonly JavaScriptSemanticMemberEffect[],
   path: SemanticAliasSelectionPath,
-): readonly JavaScriptSemanticMemberEffect[] => {
-  const positions: number[] = [];
+  visit: (position: number) => boolean,
+): boolean => {
   const pending = [{ node: currentEffectPathIndex(effects).root, depth: 0 }];
   while (pending.length > 0) {
     const { node, depth } = pending.pop()!;
-    for (const position of node.ends ?? []) positions.push(position);
+    for (const position of node.ends ?? []) if (visit(position)) return true;
     if (depth >= path.length) continue;
     if (node.open !== undefined)
       pending.push({ node: node.open, depth: depth + 1 });
@@ -110,7 +108,33 @@ export const semanticEffectPathCandidates = (
           pending.push({ node: child, depth: depth + 1 });
       }
   }
+  return false;
+};
+
+/**
+ * Effects whose recorded path may match a projected read, in record order.
+ * Candidates are a superset, so callers still apply `semanticEffectPathMatches`.
+ */
+export const semanticEffectPathCandidates = (
+  effects: readonly JavaScriptSemanticMemberEffect[],
+  path: SemanticAliasSelectionPath,
+): readonly JavaScriptSemanticMemberEffect[] => {
+  const positions: number[] = [];
+  visitEffectPathCandidates(effects, path, (position) => {
+    positions.push(position);
+    return false;
+  });
   return positions
     .sort((left, right) => left - right)
     .map((position) => effects[position]!);
 };
+
+/** Whether any candidate effect for a projected read satisfies `predicate`. */
+export const semanticSomeEffectPathCandidate = (
+  effects: readonly JavaScriptSemanticMemberEffect[],
+  path: SemanticAliasSelectionPath,
+  predicate: (effect: JavaScriptSemanticMemberEffect) => boolean,
+): boolean =>
+  visitEffectPathCandidates(effects, path, (position) =>
+    predicate(effects[position]!),
+  );

@@ -4,6 +4,7 @@ import type { SemanticAliasSelection } from "./javascriptSemanticAliasSelections
 import {
   semanticEffectPathCandidates,
   semanticEffectPathMatches,
+  semanticSomeEffectPathCandidate,
 } from "./javascriptSemanticEffectPathIndex.js";
 import type { JavaScriptSemanticPropertyPath } from "./javascriptSemanticPropertyPaths.js";
 import type { JavaScriptSemanticMemberEffect } from "./javascriptSemanticState.js";
@@ -64,6 +65,12 @@ it("selects exactly the linearly matching effects, in record order", () => {
           effects.indexOf(candidates[index - 1]!) < effects.indexOf(effect),
       ),
     ).toBe(true);
+    const evenDepth = (effect: JavaScriptSemanticMemberEffect) =>
+      semanticEffectPathMatches(effect.path, path) &&
+      effect.path.length % 2 === 0;
+    expect(semanticSomeEffectPathCandidate(effects, path, evenDepth)).toBe(
+      effects.some(evenDepth),
+    );
     compared += expected.length;
   }
   expect(effects.length).toBeGreaterThan(400);
@@ -86,4 +93,22 @@ it("skips effects whose exact keys no selected choice names", () => {
       ({ path }) => path,
     ),
   ).toEqual([["b"], []]);
+});
+
+it("stops visiting candidates at the first satisfied predicate", () => {
+  const effects: JavaScriptSemanticMemberEffect[] = Array.from(
+    { length: 100 },
+    () => ({ path: ["a"], node: undefined }),
+  );
+  let visited = 0;
+  expect(
+    semanticSomeEffectPathCandidate(effects, ["a"], () => {
+      visited += 1;
+      return true;
+    }),
+  ).toBe(true);
+  expect(visited).toBe(1);
+  expect(semanticSomeEffectPathCandidate(effects, ["b"], () => true)).toBe(
+    false,
+  );
 });
