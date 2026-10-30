@@ -99,6 +99,40 @@ describe("Apple bundle directory admission", () => {
     });
   });
 
+  it("opens a flattened framework through Resources/Info.plist", async () => {
+    const root = await createTestTempDirectory("rea-bundle-target-");
+    const framework = join(root, "Electron Framework.framework");
+    await mkdir(join(framework, "Resources"), { recursive: true });
+    await writeFile(
+      join(framework, "Resources", "Info.plist"),
+      infoPlist("Electron Framework"),
+    );
+    await writeFile(join(framework, "Electron Framework"), program());
+    expect(await opened(framework, root)).toMatchObject({
+      path: await realpath(join(framework, "Electron Framework")),
+      bundleInfoPlist: join(framework, "Resources", "Info.plist"),
+    });
+    expect(await findAppBundleResourceRoot(framework)).toEqual({
+      ok: true,
+      value: expect.objectContaining({
+        layout: "flattened-framework",
+        infoPlistPath: join(
+          await realpath(framework),
+          "Resources",
+          "Info.plist",
+        ),
+      }),
+    });
+    // A root Info.plist as well leaves two declarations to choose between.
+    await writeFile(
+      join(framework, "Info.plist"),
+      infoPlist("Electron Framework"),
+    );
+    expect((await failure(framework, root)).details).toMatchObject({
+      constraint: "bundle_layout_ambiguous",
+    });
+  });
+
   it.skipIf(process.platform === "win32")(
     "opens a versioned framework through Versions/Current",
     async () => {
@@ -159,7 +193,8 @@ describe("Apple bundle directories that fail closed", () => {
         probed_paths: [
           join(canonical, "Contents", "Info.plist"),
           join(canonical, "Info.plist"),
-          join(canonical, "Versions", "Current", "Resources", "Info.plist"),
+          // Without Versions/, a framework is read as flattened.
+          join(canonical, "Resources", "Info.plist"),
         ],
       },
     });

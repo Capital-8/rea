@@ -765,9 +765,11 @@ automatically after a runtime failure.
 `.framework`, `.xpc`, `.systemextension`, `.bundle` or `.plugin`, compared
 case-insensitively) to the program file its `Info.plist` names in
 `CFBundleExecutable`; the Evidence subject is that program file. It reads the
-macOS `Contents/` layout or the flat root layout, and a framework may instead
-keep `Info.plist` in `Versions/Current/Resources/` with its program file in
-`Versions/Current/`. An app keeps its iOS-on-Mac `Wrapper` resolution. For the
+macOS `Contents/` layout or the flat root layout. A framework with `Versions/`
+may instead keep `Info.plist` in `Versions/Current/Resources/` with its program
+file in `Versions/Current/`; a flattened framework without `Versions/`, as
+Electron and Gecko apps ship it, keeps `Resources/Info.plist` beside its
+program file. An app keeps its iOS-on-Mac `Wrapper` resolution. For the
 other types, exactly one layout may declare the bundle, and its `Info.plist`,
 program directory and program file must stay inside the bundle. Resolution
 never guesses a program file. Each refusal reports one `details.constraint`:
@@ -787,8 +789,8 @@ never guesses a program file. Each refusal reports one `details.constraint`:
 An unreadable or malformed `Info.plist` keeps its reason without a bundle
 constraint, and `details.path` names that file. A `.dext`, `.kext`,
 `.qlgenerator` or `.mdimporter` directory reports `bundle_type_unsupported`. A
-resource root reports its `layout` as `contents`, `root` or
-`versioned-framework`.
+resource root reports its `layout` as `contents`, `root`,
+`versioned-framework` or `flattened-framework`.
 
 `open_bundle_resources` selects a separate read-only app resource session
 without resolving `CFBundleExecutable`, including when it is absent or

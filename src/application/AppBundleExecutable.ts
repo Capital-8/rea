@@ -45,13 +45,27 @@ const BUNDLE_LAYOUTS: readonly BundleLayout[] = [
 
 // A macOS framework keeps the selected version's resources and program file
 // under Versions/Current; its root holds only symbolic links into it.
-const FRAMEWORK_LAYOUTS: readonly BundleLayout[] = [
+const VERSIONED_FRAMEWORK_LAYOUTS: readonly BundleLayout[] = [
   ...BUNDLE_LAYOUTS,
   {
     name: "versioned-framework",
     plist: ["Versions", "Current", "Resources", "Info.plist"],
     programs: ["Versions", "Current"],
     programsLabel: "Versions/Current",
+  },
+];
+
+// A flattened framework, as Electron and Gecko apps ship it, is one version
+// directory without the Versions wrapper: Resources/Info.plist beside the
+// program file. Its Resources is a real directory, not the versioned layout's
+// root link into Versions/Current, so the two layouts are never both read.
+const FLATTENED_FRAMEWORK_LAYOUTS: readonly BundleLayout[] = [
+  ...BUNDLE_LAYOUTS,
+  {
+    name: "flattened-framework",
+    plist: ["Resources", "Info.plist"],
+    programs: [],
+    programsLabel: "the bundle root",
   },
 ];
 
@@ -149,7 +163,7 @@ export const resolveAppleBundleExecutable = async (
           `bundle Info.plist was not found in any supported layout: ${path}`,
           {
             constraint: "bundle_info_plist_missing",
-            probedPaths: bundleLayouts(path).map((candidate) =>
+            probedPaths: (await bundleLayouts(path)).map((candidate) =>
               join(path, ...candidate.plist),
             ),
           },
@@ -164,10 +178,14 @@ export const resolveAppleBundleExecutable = async (
   }
 };
 
-const bundleLayouts = (bundle: string): readonly BundleLayout[] =>
-  extname(bundle).toLowerCase() === ".framework"
-    ? FRAMEWORK_LAYOUTS
-    : BUNDLE_LAYOUTS;
+const bundleLayouts = async (
+  bundle: string,
+): Promise<readonly BundleLayout[]> => {
+  if (extname(bundle).toLowerCase() !== ".framework") return BUNDLE_LAYOUTS;
+  return (await entryPresent(join(bundle, "Versions")))
+    ? VERSIONED_FRAMEWORK_LAYOUTS
+    : FLATTENED_FRAMEWORK_LAYOUTS;
+};
 
 /**
  * The one layout whose Info.plist declares a bundle other than an app, or
@@ -179,13 +197,10 @@ const declaredBundleLayout = async (
   path: string,
   fileSystem: AppBundleFileSystem,
 ): Promise<Result<BundleLayout | undefined, BinaryTargetError>> => {
-  const layouts = bundleLayouts(path);
-  if (layouts === FRAMEWORK_LAYOUTS) {
+  const layouts = await bundleLayouts(path);
+  if (layouts === VERSIONED_FRAMEWORK_LAYOUTS) {
     const current = join(path, "Versions", "Current");
-    if (
-      (await entryPresent(join(path, "Versions"))) &&
-      !(await entryPresent(current))
-    )
+    if (!(await entryPresent(current)))
       return err(
         new BinaryTargetError(
           path,
@@ -270,7 +285,7 @@ export const findAppBundleResourceRoot = async (
             `bundle Info.plist was not found in any supported layout: ${callerPath}`,
             {
               constraint: "bundle_info_plist_missing",
-              probedPaths: bundleLayouts(canonicalInput).map((layout) =>
+              probedPaths: (await bundleLayouts(canonicalInput)).map((layout) =>
                 join(canonicalInput, ...layout.plist),
               ),
             },
