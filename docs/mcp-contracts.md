@@ -767,13 +767,25 @@ keep `Info.plist` in `Versions/Current/Resources/` with its program file in
 `Versions/Current/`. An app keeps its iOS-on-Mac `Wrapper` resolution. For the
 other types, exactly one layout may declare the bundle, and its `Info.plist`,
 program directory and program file must stay inside the bundle. Resolution
-never guesses a program file. A failure reports `details.constraint`
-(`bundle_info_plist_missing`, `bundle_layout_ambiguous`,
-`bundle_executable_undeclared`, `bundle_program_missing`,
-`bundle_current_version_missing` or `bundle_path_escapes`), `probed_paths`, and
-`info_plist` when one was read. Another Apple bundle type, such as `.dext` or
-`.kext`, reports `bundle_type_unsupported`. A resource root reports its
-`layout` as `contents`, `root` or `versioned-framework`.
+never guesses a program file. Each refusal reports one `details.constraint`:
+
+- `bundle_info_plist_missing`, with `probed_paths` listing every layout's
+  `Info.plist`.
+- `bundle_layout_ambiguous`, with `probed_paths` listing the `Info.plist`
+  files found.
+- `bundle_current_version_missing`, with `probed_paths` naming
+  `Versions/Current`.
+- `bundle_path_escapes`, with `probed_paths` naming the path that resolved
+  outside the bundle.
+- `bundle_executable_undeclared`, with `info_plist`.
+- `bundle_program_missing`, with `info_plist` and `probed_paths` naming the
+  declared program file.
+
+An unreadable or malformed `Info.plist` keeps its reason without a bundle
+constraint, and `details.path` names that file. A `.dext`, `.kext`,
+`.qlgenerator` or `.mdimporter` directory reports `bundle_type_unsupported`. A
+resource root reports its `layout` as `contents`, `root` or
+`versioned-framework`.
 
 `open_bundle_resources` selects a separate read-only app resource session
 without resolving `CFBundleExecutable`, including when it is absent or

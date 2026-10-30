@@ -29,7 +29,7 @@ import {
   stat,
   type FileHandle,
 } from "node:fs/promises";
-import { basename, extname } from "node:path";
+import { extname } from "node:path";
 
 import { BinaryTargetError } from "../domain/configurationErrors.js";
 import {
@@ -51,8 +51,8 @@ import {
   type ResolvedAppBundle,
 } from "./AppBundleExecutable.js";
 import {
-  APPLE_BUNDLE_EXTENSION,
   OPENABLE_APPLE_BUNDLE_TYPES_TEXT,
+  isUnopenedAppleBundleExtension,
   openableAppleBundleExtension,
 } from "../domain/apple/appleBundleTypes.js";
 import {
@@ -862,7 +862,7 @@ const resolveAppBundle = async (
     return resolveAppleBundleExecutable(path);
   // Another Apple bundle type, such as a driver or kernel extension, is not
   // an application directory and has no JavaScript route.
-  if (APPLE_BUNDLE_EXTENSION.test(basename(path)))
+  if (isUnopenedAppleBundleExtension(extname(path)))
     return err(
       new BinaryTargetError(
         path,

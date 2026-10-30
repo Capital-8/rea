@@ -56,6 +56,13 @@ const versionedFramework = async (
 const open = (path: string, cwd: string) =>
   parseBinaryTarget(path, { cwd, hostArchitecture: "arm64" });
 
+// Throw the typed admission error so a failed open reports its cause.
+const opened = async (path: string, cwd: string) => {
+  const result = await open(path, cwd);
+  if (!result.ok) throw result.error;
+  return result.value;
+};
+
 const failure = async (path: string, cwd: string) => {
   const result = await open(path, cwd);
   if (result.ok) throw new Error(`${path} was admitted`);
@@ -73,8 +80,7 @@ describe("Apple bundle directory admission", () => {
   ])("opens %s through Contents/Info.plist", async (name) => {
     const root = await createTestTempDirectory("rea-bundle-target-");
     const { bundle, program: path } = await contentsBundle(root, name);
-    const result = await open(bundle, root);
-    expect(result.ok && result.value).toMatchObject({
+    expect(await opened(bundle, root)).toMatchObject({
       path: await realpath(path),
       format: "mach-o",
       bundleInfoPlist: join(bundle, "Contents", "Info.plist"),
@@ -87,8 +93,7 @@ describe("Apple bundle directory admission", () => {
     await mkdir(framework);
     await writeFile(join(framework, "Info.plist"), infoPlist("Flat"));
     await writeFile(join(framework, "Flat"), program());
-    const result = await open(framework, root);
-    expect(result.ok && result.value).toMatchObject({
+    expect(await opened(framework, root)).toMatchObject({
       path: await realpath(join(framework, "Flat")),
       bundleInfoPlist: join(framework, "Info.plist"),
     });
@@ -99,8 +104,7 @@ describe("Apple bundle directory admission", () => {
     async () => {
       const root = await createTestTempDirectory("rea-bundle-target-");
       const framework = await versionedFramework(root);
-      const result = await open(framework, root);
-      expect(result.ok && result.value).toMatchObject({
+      expect(await opened(framework, root)).toMatchObject({
         path: await realpath(join(framework, "Versions", "A", "Demo")),
         bundleInfoPlist: join(
           framework,
@@ -134,8 +138,7 @@ describe("Apple bundle directory admission", () => {
         declared: "Other",
         file: "Other",
       });
-      const result = await open(framework, root);
-      expect(result.ok && result.value).toMatchObject({
+      expect(await opened(framework, root)).toMatchObject({
         path: await realpath(join(framework, "Versions", "A", "Other")),
       });
     },
@@ -267,23 +270,29 @@ describe("Apple bundle directories that fail closed", () => {
 });
 
 describe("directories this route does not open", () => {
-  it("names another Apple bundle type without the JavaScript route", async () => {
-    const root = await createTestTempDirectory("rea-bundle-target-");
-    const driver = join(root, "com.example.Driver.dext");
-    await mkdir(driver);
-    await writeFile(join(driver, "Info.plist"), infoPlist("Driver"));
-    await writeFile(join(driver, "Driver"), program());
-    const projected = await failure(driver, root);
-    expect(projected).toMatchObject({
-      category: "unsupported_target",
-      details: { constraint: "bundle_type_unsupported" },
-    });
-    expect(projected.message).toContain(".dext");
-    expect(projected.message).toContain(".framework");
-    expect(JSON.stringify(projected)).not.toContain(
-      "analyze_javascript_application",
-    );
-  });
+  it.each([".dext", ".kext"])(
+    "names a %s directory as an unsupported Apple bundle without the JavaScript route",
+    async (extension) => {
+      const root = await createTestTempDirectory("rea-bundle-target-");
+      const driver = join(root, `com.example.Driver${extension}`);
+      await mkdir(join(driver, "Contents", "MacOS"), { recursive: true });
+      await writeFile(
+        join(driver, "Contents", "Info.plist"),
+        infoPlist("Driver"),
+      );
+      await writeFile(join(driver, "Contents", "MacOS", "Driver"), program());
+      const projected = await failure(driver, root);
+      expect(projected).toMatchObject({
+        category: "unsupported_target",
+        details: { constraint: "bundle_type_unsupported" },
+      });
+      expect(projected.message).toContain(extension);
+      expect(projected.message).toContain(".framework");
+      expect(JSON.stringify(projected)).not.toContain(
+        "analyze_javascript_application",
+      );
+    },
+  );
 
   it("lists the accepted bundle types for any other directory", async () => {
     const root = await createTestTempDirectory("rea-bundle-target-");
