@@ -758,6 +758,23 @@ concrete version, selection source, and complete analysis profile through
 choices return typed selection details. A selected provider is never replaced
 automatically after a runtime failure.
 
+`open_binary` resolves an Apple bundle directory (`.app`, `.appex`,
+`.framework`, `.xpc`, `.systemextension`, `.bundle` or `.plugin`, compared
+case-insensitively) to the program file its `Info.plist` names in
+`CFBundleExecutable`; the Evidence subject is that program file. It reads the
+macOS `Contents/` layout or the flat root layout, and a framework may instead
+keep `Info.plist` in `Versions/Current/Resources/` with its program file in
+`Versions/Current/`. An app keeps its iOS-on-Mac `Wrapper` resolution. For the
+other types, exactly one layout may declare the bundle, and its `Info.plist`,
+program directory and program file must stay inside the bundle. Resolution
+never guesses a program file. A failure reports `details.constraint`
+(`bundle_info_plist_missing`, `bundle_layout_ambiguous`,
+`bundle_executable_undeclared`, `bundle_program_missing`,
+`bundle_current_version_missing` or `bundle_path_escapes`), `probed_paths`, and
+`info_plist` when one was read. Another Apple bundle type, such as `.dext` or
+`.kext`, reports `bundle_type_unsupported`. A resource root reports its
+`layout` as `contents`, `root` or `versioned-framework`.
+
 `open_bundle_resources` selects a separate read-only app resource session
 without resolving `CFBundleExecutable`, including when it is absent or
 unresolvable. `binary_session` reports `session_kind: "bundle_resources"` and the
