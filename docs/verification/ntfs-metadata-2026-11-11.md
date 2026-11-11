@@ -112,7 +112,6 @@ regression verifies actual names/attributes alongside the limitation text;
 reader coverage still reports corrupt fixups independently. No consumer-side
 wording override was introduced.
 
-
 ## Paired-volume fixture verification
 
 Executed the packaged REA CLI and production stdio MCP server at
@@ -127,11 +126,11 @@ not committed to REA. The fixture's original acquisition process and Windows
 version were not independently authenticated; this is paired volume-fixture
 verification, not a claim of verified production forensic provenance.
 
-| Input | Bytes | SHA-256 |
-| --- | ---: | --- |
-| Published compressed volume | 1,234,746 | `c44f83257be7a8e0ff1aecb61fe82b362c44256808da216d8824ea735576af5a` |
-| Extracted logical `$MFT` | 262,144 | `3a0f1a9c5bfa7d1d011eb1b391fddd40d5773a1cf89d7223165fd8516fb34d76` |
-| Extracted logical `$UsnJrnl:$J` | 21,376 | `39bd88d262fc71e3d45b69bb559268191f76051a63f42415f60bc6357881b56a` |
+| Input                           |     Bytes | SHA-256                                                            |
+| ------------------------------- | --------: | ------------------------------------------------------------------ |
+| Published compressed volume     | 1,234,746 | `c44f83257be7a8e0ff1aecb61fe82b362c44256808da216d8824ea735576af5a` |
+| Extracted logical `$MFT`        |   262,144 | `3a0f1a9c5bfa7d1d011eb1b391fddd40d5773a1cf89d7223165fd8516fb34d76` |
+| Extracted logical `$UsnJrnl:$J` |    21,376 | `39bd88d262fc71e3d45b69bb559268191f76051a63f42415f60bc6357881b56a` |
 
 ### Independent extraction and oracle
 
@@ -186,7 +185,6 @@ Windows-host behavior, authenticated forensic acquisition provenance, real
 V3/V4 captures, extension-list assembly or nonresident payload recovery. Those
 limits remain explicit alongside the existing synthesized boundary regressions.
 
-
 ## Acquired extension metadata verification
 
 At `b76b9716192db1f2bbfdcbb093bb01c29a7e8d10`, the MFT owner additionally resolves
@@ -202,10 +200,10 @@ records' fixups and decoded their `local` / `linked` filenames and source facts.
 The byte-level fixture defines the expected ownership relationship. This is
 synthesized extension coverage, not a real extension capture.
 
-| Source-built input | Bytes | SHA-256 |
-| --- | ---: | --- |
-| MFT pair | 2,048 | `b512f7b270679dd5107b76c2787c6ca137b667bae1d3921ea1a0117fb94b5723` |
-| V2 journal | 64 | `d4356fd78b1407d4e3fe1bf9ef4b55ef4552936334d5bc744db1531a31987b60` |
+| Source-built input | Bytes | SHA-256                                                            |
+| ------------------ | ----: | ------------------------------------------------------------------ |
+| MFT pair           | 2,048 | `b512f7b270679dd5107b76c2787c6ca137b667bae1d3921ea1a0117fb94b5723` |
+| V2 journal         |    64 | `d4356fd78b1407d4e3fe1bf9ef4b55ef4552936334d5bc744db1531a31987b60` |
 
 An 11-file focused run passed 121 tests. Nineteen new domain cases cover exact
 identity and attribute selection, reused sequences, missing/wrong owners,
