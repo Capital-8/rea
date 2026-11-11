@@ -16,11 +16,11 @@ Mourinho, Mario Candeias and Rogerio Bravo, Instituto Politécnico de Beja,
 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The binary inputs
 were downloaded only for local verification and are not committed to REA.
 
-| File | Bytes | SHA-256 |
-| --- | ---: | --- |
-| `system.MFT` | 34,816 | `c2cff41973b12243fe63900cdc2b02bbd0479350b44fc652437e1fcb17ead403` |
-| `entry_45647_hard_links` | 1,024 | `8e673f39a5491131bc3654f58dac91c2e02605063fc284988efce8d2bf6a9869` |
-| `entry_95063_usn_journal` | 1,024 | `16d563481f772390bca608842fb6a8a40eb96e54794effb480ccb939116fcaf2` |
+| File                      |  Bytes | SHA-256                                                            |
+| ------------------------- | -----: | ------------------------------------------------------------------ |
+| `system.MFT`              | 34,816 | `c2cff41973b12243fe63900cdc2b02bbd0479350b44fc652437e1fcb17ead403` |
+| `entry_45647_hard_links`  |  1,024 | `8e673f39a5491131bc3654f58dac91c2e02605063fc284988efce8d2bf6a9869` |
+| `entry_95063_usn_journal` |  1,024 | `16d563481f772390bca608842fb6a8a40eb96e54794effb480ccb939116fcaf2` |
 
 ## Executed checks and observations
 
@@ -61,14 +61,14 @@ heap cap and warm filesystem caches. One trial per variant includes startup,
 acquisition, hashing and Evidence serialization. CPU covers the child process
 family; RSS/PSS peaks are sampled every 20 ms and exclude the Python observer.
 
-| Whole workflow | Before | Default summary after |
-| --- | ---: | ---: |
-| CLI calls | 2 | 2 |
-| Proxy tokens, including command text, schema and result | 24,582 | 8,086 |
-| Elapsed time, ms | 6,646 | 6,090 |
-| Process-family CPU time, ms | 5,765 | 5,346 |
-| Sampled peak family RSS, KiB | 251,740 | 246,428 |
-| Sampled peak family PSS, KiB | 248,075 | 242,844 |
+| Whole workflow                                          |  Before | Default summary after |
+| ------------------------------------------------------- | ------: | --------------------: |
+| CLI calls                                               |       2 |                     2 |
+| Proxy tokens, including command text, schema and result |  24,582 |                 8,086 |
+| Elapsed time, ms                                        |   6,646 |                 6,090 |
+| Process-family CPU time, ms                             |   5,765 |                 5,346 |
+| Sampled peak family RSS, KiB                            | 251,740 |               246,428 |
+| Sampled peak family PSS, KiB                            | 248,075 |               242,844 |
 
 Proxy tokens use `tiktoken` 0.12.0 `o200k_base`; they are not measured agent
 billing or reasoning tokens. Tool transport wrappers, model latency and warm
@@ -82,7 +82,6 @@ than the original 57,946 bytes. An additional validation call with
 `--mftRecordLimit=32` reproduced the entire baseline normalized result exactly.
 That full-detail workflow, including its schema query, uses 24,662 proxy tokens;
 its CPU and memory were not measured separately.
-
 
 ## Integration with scoped acquisition reuse
 
